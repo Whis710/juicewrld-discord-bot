@@ -2806,62 +2806,62 @@ async def slash_ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("Pong!", ephemeral=True)
 
 
-@jw_group.command(name="song", description="Get details for a specific song by ID.")
-@app_commands.describe(song_id="Numeric Juice WRLD song ID")
-async def slash_song(interaction: discord.Interaction, song_id: int) -> None:
-    """Ephemeral equivalent of !jw song <song_id>."""
+# @jw_group.command(name="song", description="Get details for a specific song by ID.")
+# @app_commands.describe(song_id="Numeric Juice WRLD song ID")
+# async def slash_song(interaction: discord.Interaction, song_id: int) -> None:
+#     """Ephemeral equivalent of !jw song <song_id>."""
+# 
+#     await interaction.response.defer(ephemeral=True, thinking=True)
+# 
+#     api = create_api_client()
+#     try:
+#         try:
+#             song = api.get_song(song_id)
+#         except NotFoundError:
+#             await interaction.followup.send(
+#                 f"No song found with ID `{song_id}`.", ephemeral=True
+#             )
+#             return
+#         except JuiceWRLDAPIError as e:
+#             await interaction.followup.send(
+#                 f"Error while fetching song: {e}", ephemeral=True
+#             )
+#             return
+#     finally:
+#         api.close()
+# 
+#     name = getattr(song, "name", getattr(song, "title", "Unknown"))
+#     category = getattr(song, "category", "?")
+#     length = getattr(song, "length", "?")
+#     era_name = getattr(getattr(song, "era", None), "name", "?")
+#     producers = getattr(song, "producers", None)
+# 
+#     desc_lines = [
+#         f"**{name}** (ID: `{song_id}`)",
+#         f"Category: `{category}`",
+#         f"Length: `{length}`",
+#         f"Era: `{era_name}`",
+#     ]
+#     if producers:
+#         desc_lines.append(f"Producers: {producers}")
+# 
+#     await interaction.followup.send("\n".join(desc_lines), ephemeral=True)
 
-    await interaction.response.defer(ephemeral=True, thinking=True)
 
-    api = create_api_client()
-    try:
-        try:
-            song = api.get_song(song_id)
-        except NotFoundError:
-            await interaction.followup.send(
-                f"No song found with ID `{song_id}`.", ephemeral=True
-            )
-            return
-        except JuiceWRLDAPIError as e:
-            await interaction.followup.send(
-                f"Error while fetching song: {e}", ephemeral=True
-            )
-            return
-    finally:
-        api.close()
-
-    name = getattr(song, "name", getattr(song, "title", "Unknown"))
-    category = getattr(song, "category", "?")
-    length = getattr(song, "length", "?")
-    era_name = getattr(getattr(song, "era", None), "name", "?")
-    producers = getattr(song, "producers", None)
-
-    desc_lines = [
-        f"**{name}** (ID: `{song_id}`)",
-        f"Category: `{category}`",
-        f"Length: `{length}`",
-        f"Era: `{era_name}`",
-    ]
-    if producers:
-        desc_lines.append(f"Producers: {producers}")
-
-    await interaction.followup.send("\n".join(desc_lines), ephemeral=True)
-
-
-@jw_group.command(name="play", description="Play a Juice WRLD song in voice chat by ID.")
-@app_commands.describe(song_id="Numeric Juice WRLD song ID")
-async def slash_play(interaction: discord.Interaction, song_id: int) -> None:
-    """Ephemeral wrapper that delegates to !jw play logic."""
-
-    await interaction.response.defer(ephemeral=True, thinking=True)
-
-    # Build a commands.Context from this interaction so we can reuse play_song.
-    ctx = await commands.Context.from_interaction(interaction)
-    await play_song(ctx, str(song_id))
-
-    await interaction.followup.send(
-        f"Requested playback for song ID `{song_id}`.", ephemeral=True
-    )
+# @jw_group.command(name="play", description="Play a Juice WRLD song in voice chat by ID.")
+# @app_commands.describe(song_id="Numeric Juice WRLD song ID")
+# async def slash_play(interaction: discord.Interaction, song_id: int) -> None:
+#     """Ephemeral wrapper that delegates to !jw play logic."""
+# 
+#     await interaction.response.defer(ephemeral=True, thinking=True)
+# 
+#     # Build a commands.Context from this interaction so we can reuse play_song.
+#     ctx = await commands.Context.from_interaction(interaction)
+#     await play_song(ctx, str(song_id))
+# 
+#     await interaction.followup.send(
+#         f"Requested playback for song ID `{song_id}`.", ephemeral=True
+#     )
 
 
 @jw_group.command(name="search", description="Search for Juice WRLD songs.")
@@ -2900,37 +2900,37 @@ async def slash_search(interaction: discord.Interaction, query: str) -> None:
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-@jw_group.command(name="join", description="Make the bot join your current voice channel.")
-async def slash_join(interaction: discord.Interaction) -> None:
-    """Ephemeral equivalent of !jw join."""
-
-    await interaction.response.defer(ephemeral=True, thinking=True)
-
-    user = interaction.user
-    if not isinstance(user, (discord.Member,)) or not user.voice or not user.voice.channel:
-        await interaction.followup.send(
-            "You need to be in a voice channel first.", ephemeral=True
-        )
-        return
-
-    channel = user.voice.channel
-    voice: Optional[discord.VoiceClient] = interaction.guild.voice_client if interaction.guild else None
-
-    try:
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            await channel.connect()
-    except Exception as e:
-        await interaction.followup.send(
-            f"Failed to join voice channel: {e}", ephemeral=True
-        )
-        return
-
-    await interaction.followup.send(
-        f"Joined voice channel: {channel.name}", ephemeral=True
-    )
+# @jw_group.command(name="join", description="Make the bot join your current voice channel.")
+# async def slash_join(interaction: discord.Interaction) -> None:
+#     """Ephemeral equivalent of !jw join."""
+# 
+#     await interaction.response.defer(ephemeral=True, thinking=True)
+# 
+#     user = interaction.user
+#     if not isinstance(user, (discord.Member,)) or not user.voice or not user.voice.channel:
+#         await interaction.followup.send(
+#             "You need to be in a voice channel first.", ephemeral=True
+#         )
+#         return
+# 
+#     channel = user.voice.channel
+#     voice: Optional[discord.VoiceClient] = interaction.guild.voice_client if interaction.guild else None
+# 
+#     try:
+#         if voice and voice.is_connected():
+#             if voice.channel != channel:
+#                 await voice.move_to(channel)
+#         else:
+#             await channel.connect()
+#     except Exception as e:
+#         await interaction.followup.send(
+#             f"Failed to join voice channel: {e}", ephemeral=True
+#         )
+#         return
+# 
+#     await interaction.followup.send(
+#         f"Joined voice channel: {channel.name}", ephemeral=True
+#     )
 
 
 @jw_group.command(name="leave", description="Disconnect the bot from voice chat.")
