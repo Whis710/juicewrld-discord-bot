@@ -13,6 +13,7 @@ import random
 import math
 import time
 import json
+import io
 from typing import Optional, Dict, Any, List
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1008,13 +1009,14 @@ class PlaylistPaginationView(discord.ui.View):
     """Paginated playlists with menu-first UI.
     
     Modes:
-    - "menu": Shows 3 action buttons (Queue, Add, Edit)
+    - "menu": Shows 4 action buttons (Queue, Add, Edit, Download)
     - "queue": Shows 1-5 buttons to queue a playlist
     - "add": Shows ➕1-5 buttons to add current song to a playlist
     - "edit_menu": Shows edit action buttons (Rename, Delete, Remove Song, Create)
     - "rename": Shows 1-5 buttons to select a playlist to rename
     - "delete": Shows 1-5 buttons to select a playlist to delete
     - "remove_song": Shows 1-5 buttons to select a playlist to remove songs from
+    - "download": Shows 💾1-5 buttons to download a playlist as a ZIP
     """
 
     def __init__(
@@ -1089,6 +1091,8 @@ class PlaylistPaginationView(discord.ui.View):
                 footer = "Press 1–5 to select a playlist to delete."
             elif self.mode == "remove_song":
                 footer = "Press 1–5 to select a playlist to manage tracks."
+            elif self.mode == "download":
+                footer = "Press 💾1–5 to download that playlist as a ZIP file."
             else:
                 footer = ""
 
@@ -1105,7 +1109,7 @@ class PlaylistPaginationView(discord.ui.View):
         total = len(self.playlist_items)
         
         if self.mode == "menu":
-            # Menu mode: show 3 action buttons
+            # Menu mode: show 4 action buttons
             queue_btn = discord.ui.Button(label="🎵 Queue Playlist", style=discord.ButtonStyle.primary, row=0)
             queue_btn.callback = self._on_queue_mode
             self.add_item(queue_btn)
@@ -1114,7 +1118,11 @@ class PlaylistPaginationView(discord.ui.View):
             add_btn.callback = self._on_add_mode
             self.add_item(add_btn)
             
-            edit_btn = discord.ui.Button(label="✏️ Edit Playlist", style=discord.ButtonStyle.secondary, row=0)
+            download_btn = discord.ui.Button(label="💾 Download Playlist", style=discord.ButtonStyle.primary, row=1)
+            download_btn.callback = self._on_download_mode
+            self.add_item(download_btn)
+            
+            edit_btn = discord.ui.Button(label="✏️ Edit Playlist", style=discord.ButtonStyle.secondary, row=1)
             edit_btn.callback = self._on_edit_mode
             self.add_item(edit_btn)
         elif self.mode == "edit_menu":
@@ -1175,9 +1183,13 @@ class PlaylistPaginationView(discord.ui.View):
                     style = discord.ButtonStyle.danger
                     callback = self._make_delete_callback(slot)
                 elif self.mode == "remove_song":
-                    label = f"➖{slot + 1}"
+                    label = f"➖0{slot + 1}"
                     style = discord.ButtonStyle.secondary
                     callback = self._make_remove_song_callback(slot)
+                elif self.mode == "download":
+                    label = f"💾{slot + 1}"
+                    style = discord.ButtonStyle.primary
+                    callback = self._make_download_callback(slot)
                 else:
                     continue
                 
@@ -1208,6 +1220,11 @@ class PlaylistPaginationView(discord.ui.View):
     def _make_remove_song_callback(self, slot_index: int):
         async def callback(interaction: discord.Interaction):
             await self._handle_remove_song_playlist(interaction, slot_index)
+        return callback
+
+    def _make_download_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_download_playlist(interaction, slot_index)
         return callback
 
     async def _on_queue_mode(self, interaction: discord.Interaction) -> None:
@@ -1244,6 +1261,13 @@ class PlaylistPaginationView(discord.ui.View):
 
     async def _on_remove_song_mode(self, interaction: discord.Interaction) -> None:
         self.mode = "remove_song"
+        self.current_page = 0
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_download_mode(self, interaction: discord.Interaction) -> None:
+        self.mode = "download"
         self.current_page = 0
         self._rebuild_buttons()
         embed = self.build_embed()
@@ -1582,6 +1606,65 @@ class PlaylistPaginationView(discord.ui.View):
         )
         embed = edit_view.build_embed()
         await interaction.response.edit_message(embed=embed, view=edit_view)
+
+    async def _handle_download_playlist(self, interaction: discord.Interaction, slot_index: int) -> None:
+        """Handle downloading all files in a playlist as a ZIP."""
+        global_index = self.current_page * self.per_page + slot_index
+        if global_index < 0 or global_index >= len(self.playlist_items):
+            await interaction.response.send_message(
+                "No playlist in that position.", ephemeral=True
+            )
+            return
+
+        playlist_name, tracks = self.playlist_items[global_index]
+
+        if not tracks:
+            await interaction.response.send_message(
+                f"Playlist `{playlist_name}` is empty.", ephemeral=True
+            )
+            return
+
+        # Defer since creating a ZIP can take time
+        await interaction.response.defer(ephemeral=True)
+
+        # Collect all file paths from the playlist
+        file_paths: List[str] = []
+        for track in tracks:
+            path = track.get("path")
+            if path:
+                file_paths.append(path)
+
+        if not file_paths:
+            await interaction.followup.send(
+                f"No valid file paths found in playlist `{playlist_name}`.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            # Use the API to create a ZIP file
+            api = create_api_client()
+            try:
+                zip_content = api.create_zip(file_paths)
+            finally:
+                api.close()
+
+            # Send the ZIP file to the user
+            zip_file = discord.File(
+                io.BytesIO(zip_content),
+                filename=f"{playlist_name}.zip"
+            )
+            
+            await interaction.followup.send(
+                f"Here's your playlist **{playlist_name}** ({len(file_paths)} file(s)):",
+                file=zip_file,
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                f"Failed to create ZIP file: {str(e)}",
+                ephemeral=True,
+            )
 
 
 class PlaylistEditOptionsView(discord.ui.View):
