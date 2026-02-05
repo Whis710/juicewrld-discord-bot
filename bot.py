@@ -257,6 +257,34 @@ async def _send_ephemeral_temporary(
     asyncio.create_task(_delete_later(msg, delay))
 
 
+def _schedule_interaction_deletion(interaction: discord.Interaction, delay: int) -> None:
+    """Schedule an interaction's original response to be deleted after a delay."""
+    async def _delete_after_delay() -> None:
+        await asyncio.sleep(delay)
+        try:
+            await interaction.delete_original_response()
+        except Exception:
+            pass
+    asyncio.create_task(_delete_after_delay())
+
+
+def _extract_duration_seconds(
+    metadata: Dict[str, Any], track: Optional[Dict[str, Any]] = None
+) -> Optional[int]:
+    """Extract duration in seconds from metadata or track dict."""
+    length_str = metadata.get("length") or (track.get("length") if track else None)
+    if length_str:
+        return _parse_length_to_seconds(length_str)
+    return None
+
+
+def _normalize_image_url(image_url: Optional[str]) -> Optional[str]:
+    """Convert relative image URLs to absolute URLs."""
+    if image_url and isinstance(image_url, str) and image_url.startswith("/"):
+        return f"{JUICEWRLD_API_BASE_URL}{image_url}"
+    return image_url
+
+
 async def _delete_now_playing_message(guild_id: int) -> None:
     """Best-effort deletion of the tracked Now Playing message for a guild."""
 
@@ -754,14 +782,7 @@ class SearchPaginationView(discord.ui.View):
                 # Edit to show closed message, then delete after 5 seconds
                 embed = discord.Embed(title="Search Results", description="Song selected. Search closed.")
                 await interaction.edit_original_response(embed=embed, view=None)
-                
-                async def _delete_after_delay() -> None:
-                    await asyncio.sleep(5)
-                    try:
-                        await interaction.delete_original_response()
-                    except Exception:
-                        pass
-                asyncio.create_task(_delete_after_delay())
+                _schedule_interaction_deletion(interaction, 5)
             else:
                 # Regular messages can be deleted immediately
                 msg = self.message or interaction.message
@@ -1411,12 +1432,7 @@ class PlaylistPaginationView(discord.ui.View):
 
             title = track.get("name") or f"Playlist {playlist_name} item"
             metadata = track.get("metadata") or {}
-            
-            # Extract duration from metadata length field
-            duration_seconds = None
-            length_str = metadata.get("length") or track.get("length")
-            if length_str:
-                duration_seconds = _parse_length_to_seconds(length_str)
+            duration_seconds = _extract_duration_seconds(metadata, track)
 
             await _queue_or_play_now(
                 self.ctx,
@@ -1444,14 +1460,7 @@ class PlaylistPaginationView(discord.ui.View):
             playing_embed.set_footer(text="This message will disappear in 5 seconds.")
             try:
                 await interaction.edit_original_response(embed=playing_embed, view=None)
-                # Schedule deletion after 5 seconds
-                async def _delete_after_delay() -> None:
-                    await asyncio.sleep(5)
-                    try:
-                        await interaction.delete_original_response()
-                    except Exception:
-                        pass
-                asyncio.create_task(_delete_after_delay())
+                _schedule_interaction_deletion(interaction, 5)
             except Exception:
                 # Fallback if edit fails - use ephemeral temporary
                 await _send_ephemeral_temporary(
@@ -1467,14 +1476,7 @@ class PlaylistPaginationView(discord.ui.View):
             await interaction.response.send_message(
                 "No playlist in that position.", ephemeral=True
             )
-            # Schedule deletion after 5 seconds
-            async def _delete_after_delay() -> None:
-                await asyncio.sleep(5)
-                try:
-                    await interaction.delete_original_response()
-                except Exception:
-                    pass
-            asyncio.create_task(_delete_after_delay())
+            _schedule_interaction_deletion(interaction, 5)
             return
 
         target_playlist_name, target_tracks = self.playlist_items[global_index]
@@ -1485,14 +1487,7 @@ class PlaylistPaginationView(discord.ui.View):
             await interaction.response.send_message(
                 "Guild context unavailable.", ephemeral=True
             )
-            # Schedule deletion after 5 seconds
-            async def _delete_after_delay() -> None:
-                await asyncio.sleep(5)
-                try:
-                    await interaction.delete_original_response()
-                except Exception:
-                    pass
-            asyncio.create_task(_delete_after_delay())
+            _schedule_interaction_deletion(interaction, 5)
             return
 
         info = _guild_now_playing.get(guild.id)
@@ -1500,14 +1495,7 @@ class PlaylistPaginationView(discord.ui.View):
             await interaction.response.send_message(
                 "Nothing is currently playing.", ephemeral=True
             )
-            # Schedule deletion after 5 seconds
-            async def _delete_after_delay() -> None:
-                await asyncio.sleep(5)
-                try:
-                    await interaction.delete_original_response()
-                except Exception:
-                    pass
-            asyncio.create_task(_delete_after_delay())
+            _schedule_interaction_deletion(interaction, 5)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -1525,14 +1513,7 @@ class PlaylistPaginationView(discord.ui.View):
             msg = await interaction.followup.send(
                 f"Playlist `{target_playlist_name}` not found.", ephemeral=True, wait=True
             )
-            # Schedule deletion after 5 seconds
-            async def _delete_after_delay() -> None:
-                await asyncio.sleep(5)
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-            asyncio.create_task(_delete_after_delay())
+            asyncio.create_task(_delete_later(msg, 5))
             return
 
         # Avoid duplicates: prefer matching by song ID, then by path.
@@ -1549,14 +1530,7 @@ class PlaylistPaginationView(discord.ui.View):
             msg = await interaction.followup.send(
                 f"`{title}` is already in playlist `{target_playlist_name}`.", ephemeral=True, wait=True
             )
-            # Schedule deletion after 5 seconds
-            async def _delete_after_delay() -> None:
-                await asyncio.sleep(5)
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-            asyncio.create_task(_delete_after_delay())
+            asyncio.create_task(_delete_later(msg, 5))
             return
 
         playlist.append(
@@ -1583,13 +1557,7 @@ class PlaylistPaginationView(discord.ui.View):
             pass
         
         # Schedule deletion of confirmation message after 5 seconds
-        async def _delete_after_delay() -> None:
-            await asyncio.sleep(5)
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-        asyncio.create_task(_delete_after_delay())
+        asyncio.create_task(_delete_later(msg, 5))
 
     async def _handle_rename_playlist(self, interaction: discord.Interaction, slot_index: int) -> None:
         """Handle renaming a playlist."""
@@ -1967,12 +1935,7 @@ class SharedPlaylistView(discord.ui.View):
 
             title = track.get("name") or f"Track from {self.playlist_name}"
             metadata = track.get("metadata") or {}
-            
-            # Extract duration from metadata length field
-            duration_seconds = None
-            length_str = metadata.get("length") or track.get("length")
-            if length_str:
-                duration_seconds = _parse_length_to_seconds(length_str)
+            duration_seconds = _extract_duration_seconds(metadata, track)
 
             await _queue_or_play_now(
                 self.ctx,
@@ -1997,13 +1960,7 @@ class SharedPlaylistView(discord.ui.View):
                 wait=True,
             )
             # Auto-delete the queue confirmation after 5 seconds
-            async def _delete_queue_msg() -> None:
-                await asyncio.sleep(5)
-                try:
-                    await queue_msg.delete()
-                except Exception:
-                    pass
-            asyncio.create_task(_delete_queue_msg())
+            asyncio.create_task(_delete_later(queue_msg, 5))
         # Delete the shared playlist message after 120 seconds (only on success)
             await self._schedule_message_deletion()
 
@@ -2121,13 +2078,7 @@ class SharedPlaylistView(discord.ui.View):
     async def _schedule_message_deletion(self) -> None:
         """Schedule the shared playlist message to be deleted after 120 seconds."""
         if self.message:
-            async def _delete_after_delay() -> None:
-                await asyncio.sleep(120)
-                try:
-                    await self.message.delete()
-                except Exception:
-                    pass
-            asyncio.create_task(_delete_after_delay())
+            asyncio.create_task(_delete_later(self.message, 120))
             self.stop()  # Stop the view to prevent further interactions
 
     async def on_timeout(self) -> None:
@@ -3405,10 +3356,35 @@ async def slash_search(interaction: discord.Interaction, query: str) -> None:
 
     # Build a Context to drive playback when buttons are pressed.
     ctx = await commands.Context.from_interaction(interaction)
-    view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total, is_ephemeral=True)
-    embed = view.build_embed()
-
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    
+    # If only one result, show a simple embed without pagination
+    if len(songs) == 1:
+        song = songs[0]
+        sid = getattr(song, "id", "?")
+        name = getattr(song, "name", getattr(song, "title", "Unknown"))
+        category = getattr(song, "category", "?")
+        length = getattr(song, "length", "?")
+        era_name = getattr(getattr(song, "era", None), "name", "?")
+        
+        description = (
+            f"**{name}** (ID: `{sid}`)\n"
+            f"Category: `{category}`\n"
+            f"Length: `{length}`\n"
+            f"Era: `{era_name}`"
+        )
+        
+        embed = discord.Embed(
+            title="Search Result",
+            description=description,
+        )
+        embed.set_footer(text=f"Use /jw play {sid} to play this song.")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        # Multiple results: show pagination view
+        view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total, is_ephemeral=True)
+        embed = view.build_embed()
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 # @jw_group.command(name="join", description="Make the bot join your current voice channel.")
@@ -4222,9 +4198,7 @@ async def play_song(ctx: commands.Context, song_id: str):
 
         # Normalize image URL like radio: relative paths ("/assets/...")
         # should become absolute URLs against JUICEWRLD_API_BASE_URL.
-        image_url = song_obj.image_url
-        if image_url and image_url.startswith("/"):
-            image_url = f"{JUICEWRLD_API_BASE_URL}{image_url}"
+        image_url = _normalize_image_url(song_obj.image_url)
 
         # Build metadata that mirrors the canonical Song JSON model.
         song_meta = _build_song_metadata_from_song(
@@ -4579,12 +4553,7 @@ async def playlist_play(ctx: commands.Context, *, name: str):
 
         title = track.get("name") or f"Playlist {name} item"
         metadata = track.get("metadata") or {}
-        
-        # Extract duration from metadata length field
-        duration_seconds = None
-        length_str = metadata.get("length") or track.get("length")
-        if length_str:
-            duration_seconds = _parse_length_to_seconds(length_str)
+        duration_seconds = _extract_duration_seconds(metadata, track)
 
         await _queue_or_play_now(
             ctx,
@@ -4685,9 +4654,7 @@ async def playlist_add(ctx: commands.Context, *, name_and_id: str):
             api.close()
 
     if song_obj is not None:
-        image_url = getattr(song_obj, "image_url", None)
-        if image_url and isinstance(image_url, str) and image_url.startswith("/"):
-            image_url = f"{JUICEWRLD_API_BASE_URL}{image_url}"
+        image_url = _normalize_image_url(getattr(song_obj, "image_url", None))
         meta = _build_song_metadata_from_song(
             song_obj,
             path=file_path,
@@ -4908,10 +4875,7 @@ async def _play_from_browse(
         results = search_data.get("results") or []
         if results:
             song_obj = results[0]
-
-            image_url = song_obj.image_url
-            if image_url and image_url.startswith("/"):
-                image_url = f"{JUICEWRLD_API_BASE_URL}{image_url}"
+            image_url = _normalize_image_url(song_obj.image_url)
 
             # Build metadata mirroring the canonical Song model.
             song_meta = _build_song_metadata_from_song(
@@ -5027,10 +4991,7 @@ async def _play_random_song_in_guild(ctx: commands.Context) -> None:
                 song_meta["path"] = file_path
 
                 # image_url in docs is relative (e.g., "/assets/youtube.webp").
-                image_url = song_meta.get("image_url") or ""
-                if isinstance(image_url, str) and image_url.startswith("/"):
-                    image_url = f"{JUICEWRLD_API_BASE_URL}{image_url}"
-                song_meta["image_url"] = image_url
+                song_meta["image_url"] = _normalize_image_url(song_meta.get("image_url"))
             else:
                 # Minimal fallback if the radio payload is missing a song object.
                 song_meta = {"id": song_id, "path": file_path}
