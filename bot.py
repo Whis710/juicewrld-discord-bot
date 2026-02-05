@@ -49,7 +49,10 @@ _guild_queue: Dict[int, List[Dict[str, Any]]] = {}
 # show "now playing" information and operate on the right voice client.
 _guild_now_playing: Dict[int, Dict[str, Any]] = {}
 
-# Per-user playlists: user_id -> playlist_name -> list of track dicts.
+# Per-guild tracking of the previously played song
+_guild_previous_song: Dict[int, Dict[str, Any]] = {}
+
+# Per-user playlists:
 # For now this is kept in memory only; a default "Likes" playlist is used
 # by the Now Playing "Like" button.
 _user_playlists: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
@@ -522,6 +525,15 @@ def _set_now_playing(
 
     guild_id = ctx.guild.id
     existing = _guild_now_playing.get(guild_id, {})
+    
+    # Save current song as previous (if there was one playing)
+    if existing.get("title") and existing.get("title") != "Nothing playing":
+        _guild_previous_song[guild_id] = {
+            "title": existing.get("title"),
+            "path": existing.get("path"),
+            "metadata": existing.get("metadata", {}),
+        }
+    
     existing.update(
         {
             "title": title,
@@ -531,6 +543,8 @@ def _set_now_playing(
             "metadata": metadata or {},
             "duration_seconds": duration_seconds,
             "started_at": time.time(),
+            "paused_at": None,  # Track when paused
+            "total_paused_time": 0,  # Accumulated pause time
         }
     )
     _guild_now_playing[guild_id] = existing
@@ -1017,6 +1031,7 @@ class PlaylistPaginationView(discord.ui.View):
     - "delete": Shows 1-5 buttons to select a playlist to delete
     - "remove_song": Shows 1-5 buttons to select a playlist to remove songs from
     - "download": Shows 💾1-5 buttons to download a playlist as a ZIP
+    - "share": Shows 📤1-5 buttons to share a playlist publicly
     """
 
     def __init__(
@@ -1026,17 +1041,29 @@ class PlaylistPaginationView(discord.ui.View):
         playlists: Dict[str, List[Dict[str, Any]]],
         user: discord.abc.User,
         mode: str = "menu",
+        interaction: Optional[discord.Interaction] = None,
     ) -> None:
-        super().__init__(timeout=120)
+        super().__init__(timeout=60)
         self.ctx = ctx
         self.user = user
         self.mode = mode
+        self.interaction = interaction  # Store for cleanup on timeout
         # Convert dict to list of (name, tracks) tuples for pagination
         self.playlist_items: List[tuple] = list(playlists.items())
         self.per_page = 5
         self.current_page = 0
         self.total_pages = max(1, math.ceil(len(self.playlist_items) / self.per_page))
         self._rebuild_buttons()
+
+    async def on_timeout(self) -> None:
+        """Called when the view times out. Delete the ephemeral message."""
+        if self.interaction:
+            try:
+                await self.interaction.delete_original_response()
+            except discord.errors.NotFound:
+                pass  # Message already deleted
+            except Exception:
+                pass  # Ignore other errors during cleanup
 
     def _get_page_playlists(self) -> List[tuple]:
         start = self.current_page * self.per_page
@@ -1093,6 +1120,8 @@ class PlaylistPaginationView(discord.ui.View):
                 footer = "Press 1–5 to select a playlist to manage tracks."
             elif self.mode == "download":
                 footer = "Press 💾1–5 to download that playlist as a ZIP file."
+            elif self.mode == "share":
+                footer = "Press 📤1–5 to share that playlist publicly."
             else:
                 footer = ""
 
@@ -1117,6 +1146,10 @@ class PlaylistPaginationView(discord.ui.View):
             add_btn = discord.ui.Button(label="➕ Add to Playlist", style=discord.ButtonStyle.success, row=0)
             add_btn.callback = self._on_add_mode
             self.add_item(add_btn)
+            
+            share_btn = discord.ui.Button(label="📤 Share Playlist", style=discord.ButtonStyle.secondary, row=0)
+            share_btn.callback = self._on_share_mode
+            self.add_item(share_btn)
             
             download_btn = discord.ui.Button(label="💾 Download Playlist", style=discord.ButtonStyle.primary, row=1)
             download_btn.callback = self._on_download_mode
@@ -1148,23 +1181,26 @@ class PlaylistPaginationView(discord.ui.View):
             self.add_item(back_btn)
         else:
             # Selection mode: show pagination + numbered buttons + back
-            # Row 0: pagination
-            prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, row=0, disabled=self.current_page == 0)
-            prev_btn.callback = lambda i: self._change_page(i, -1)
-            self.add_item(prev_btn)
+            # Row 0: pagination (only show if navigable)
+            if self.current_page > 0:
+                prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, row=0)
+                prev_btn.callback = lambda i: self._change_page(i, -1)
+                self.add_item(prev_btn)
             
-            next_btn = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary, row=0, disabled=self.current_page >= self.total_pages - 1)
-            next_btn.callback = lambda i: self._change_page(i, +1)
-            self.add_item(next_btn)
+            if self.current_page < self.total_pages - 1:
+                next_btn = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary, row=0)
+                next_btn.callback = lambda i: self._change_page(i, +1)
+                self.add_item(next_btn)
             
             back_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.danger, row=0)
             back_btn.callback = self._on_back
             self.add_item(back_btn)
             
-            # Row 1: numbered buttons based on mode
+            # Row 1: numbered buttons based on mode (only show if slot has a playlist)
             for slot in range(5):
                 global_index = self.current_page * self.per_page + slot
-                disabled = global_index >= total
+                if global_index >= total:
+                    break  # No more playlists, stop adding buttons
                 
                 if self.mode == "queue":
                     label = str(slot + 1)
@@ -1190,10 +1226,14 @@ class PlaylistPaginationView(discord.ui.View):
                     label = f"💾{slot + 1}"
                     style = discord.ButtonStyle.primary
                     callback = self._make_download_callback(slot)
+                elif self.mode == "share":
+                    label = f"📤{slot + 1}"
+                    style = discord.ButtonStyle.secondary
+                    callback = self._make_share_callback(slot)
                 else:
                     continue
                 
-                btn = discord.ui.Button(label=label, style=style, row=1, disabled=disabled)
+                btn = discord.ui.Button(label=label, style=style, row=1)
                 btn.callback = callback
                 self.add_item(btn)
 
@@ -1225,6 +1265,11 @@ class PlaylistPaginationView(discord.ui.View):
     def _make_download_callback(self, slot_index: int):
         async def callback(interaction: discord.Interaction):
             await self._handle_download_playlist(interaction, slot_index)
+        return callback
+
+    def _make_share_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_share_playlist(interaction, slot_index)
         return callback
 
     async def _on_queue_mode(self, interaction: discord.Interaction) -> None:
@@ -1268,6 +1313,13 @@ class PlaylistPaginationView(discord.ui.View):
 
     async def _on_download_mode(self, interaction: discord.Interaction) -> None:
         self.mode = "download"
+        self.current_page = 0
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_share_mode(self, interaction: discord.Interaction) -> None:
+        self.mode = "share"
         self.current_page = 0
         self._rebuild_buttons()
         embed = self.build_embed()
@@ -1359,6 +1411,12 @@ class PlaylistPaginationView(discord.ui.View):
 
             title = track.get("name") or f"Playlist {playlist_name} item"
             metadata = track.get("metadata") or {}
+            
+            # Extract duration from metadata length field
+            duration_seconds = None
+            length_str = metadata.get("length") or track.get("length")
+            if length_str:
+                duration_seconds = _parse_length_to_seconds(length_str)
 
             await _queue_or_play_now(
                 self.ctx,
@@ -1366,7 +1424,7 @@ class PlaylistPaginationView(discord.ui.View):
                 title=str(title),
                 path=file_path,
                 metadata=metadata,
-                duration_seconds=None,
+                duration_seconds=duration_seconds,
                 silent=True,
             )
             queued += 1
@@ -1383,12 +1441,12 @@ class PlaylistPaginationView(discord.ui.View):
                 description=f"Playing playlist **{playlist_name}** ({queued} track(s) queued).",
                 color=discord.Color.green(),
             )
-            playing_embed.set_footer(text="This message will disappear in 10 seconds.")
+            playing_embed.set_footer(text="This message will disappear in 5 seconds.")
             try:
                 await interaction.edit_original_response(embed=playing_embed, view=None)
-                # Schedule deletion after 10 seconds
+                # Schedule deletion after 5 seconds
                 async def _delete_after_delay() -> None:
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(5)
                     try:
                         await interaction.delete_original_response()
                     except Exception:
@@ -1699,6 +1757,388 @@ class PlaylistPaginationView(discord.ui.View):
                     f"Failed to create ZIP file: {str(e)}",
                     ephemeral=True,
                 )
+
+    async def _handle_share_playlist(self, interaction: discord.Interaction, slot_index: int) -> None:
+        """Handle sharing a playlist publicly."""
+        global_index = self.current_page * self.per_page + slot_index
+        if global_index < 0 or global_index >= len(self.playlist_items):
+            await interaction.response.send_message(
+                "No playlist in that position.", ephemeral=True
+            )
+            return
+
+        playlist_name, tracks = self.playlist_items[global_index]
+
+        if not tracks:
+            await interaction.response.send_message(
+                f"Playlist `{playlist_name}` is empty.", ephemeral=True
+            )
+            return
+
+        # Close the ephemeral playlist view
+        try:
+            if self.interaction:
+                await self.interaction.delete_original_response()
+        except Exception:
+            pass
+
+        # Create a public shared playlist view
+        shared_view = SharedPlaylistView(
+            ctx=self.ctx,
+            owner=self.user,
+            playlist_name=playlist_name,
+            tracks=list(tracks),  # Copy to avoid mutation issues
+        )
+        embed = shared_view.build_embed()
+
+        # Send the public message (not ephemeral)
+        await interaction.response.send_message(embed=embed, view=shared_view)
+        shared_view.message = await interaction.original_response()
+
+
+class SharedPlaylistView(discord.ui.View):
+    """Public view for a shared playlist.
+    
+    Anyone can interact with this view to:
+    - Navigate through tracks
+    - Copy the playlist to their own playlists
+    - Download the playlist as a ZIP
+    - Queue the playlist for playback
+    """
+
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        owner: discord.abc.User,
+        playlist_name: str,
+        tracks: List[Dict[str, Any]],
+    ) -> None:
+        super().__init__(timeout=120)  # 2 minutes timeout
+        self.ctx = ctx
+        self.owner = owner
+        self.playlist_name = playlist_name
+        self.tracks = tracks
+        self.per_page = 10
+        self.current_page = 0
+        self.total_pages = max(1, math.ceil(len(self.tracks) / self.per_page))
+        self.message: Optional[discord.Message] = None
+        self._rebuild_buttons()
+
+    def build_embed(self) -> discord.Embed:
+        total = len(self.tracks)
+        owner_name = getattr(self.owner, 'display_name', str(self.owner))
+        
+        header = f"**{self.playlist_name}** by {owner_name}\n{total} track(s)"
+        
+        if total == 0:
+            description = header + "\n\n(empty playlist)"
+        else:
+            start = self.current_page * self.per_page
+            end = start + self.per_page
+            page_tracks = self.tracks[start:end]
+            
+            lines: List[str] = []
+            for idx, track in enumerate(page_tracks, start=start + 1):
+                name = track.get("name") or track.get("id") or "Unknown"
+                lines.append(f"`{idx}.` {name}")
+            
+            description = header
+            if self.total_pages > 1:
+                description += f"\nPage {self.current_page + 1}/{self.total_pages}"
+            description += "\n\n" + "\n".join(lines)
+
+        embed = discord.Embed(
+            title="🎵 Shared Playlist",
+            description=description,
+            color=discord.Color.purple(),
+        )
+        embed.set_footer(text="Use the buttons below to interact with this playlist.")
+        return embed
+
+    def _rebuild_buttons(self) -> None:
+        self.clear_items()
+        
+        # Row 0: Navigation
+        prev_btn = discord.ui.Button(
+            label="◀", 
+            style=discord.ButtonStyle.secondary, 
+            row=0, 
+            disabled=self.current_page == 0
+        )
+        prev_btn.callback = lambda i: self._change_page(i, -1)
+        self.add_item(prev_btn)
+        
+        next_btn = discord.ui.Button(
+            label="▶", 
+            style=discord.ButtonStyle.secondary, 
+            row=0, 
+            disabled=self.current_page >= self.total_pages - 1
+        )
+        next_btn.callback = lambda i: self._change_page(i, +1)
+        self.add_item(next_btn)
+        
+        # Row 1: Action buttons
+        queue_btn = discord.ui.Button(
+            label="🎵 Queue Playlist", 
+            style=discord.ButtonStyle.primary, 
+            row=1
+        )
+        queue_btn.callback = self._on_queue
+        self.add_item(queue_btn)
+        
+        copy_btn = discord.ui.Button(
+            label="📋 Copy Playlist", 
+            style=discord.ButtonStyle.success, 
+            row=1
+        )
+        copy_btn.callback = self._on_copy
+        self.add_item(copy_btn)
+        
+        download_btn = discord.ui.Button(
+            label="💾 Download", 
+            style=discord.ButtonStyle.secondary, 
+            row=1
+        )
+        download_btn.callback = self._on_download
+        self.add_item(download_btn)
+
+    async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
+        new_page = self.current_page + delta
+        if new_page < 0 or new_page >= self.total_pages:
+            await interaction.response.defer()
+            return
+        self.current_page = new_page
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_queue(self, interaction: discord.Interaction) -> None:
+        """Queue all tracks from this playlist for playback."""
+        user = interaction.user
+        if not isinstance(user, discord.Member) or not user.voice or not user.voice.channel:
+            await interaction.response.send_message(
+                "You need to be in a voice channel to queue this playlist.", 
+                ephemeral=True
+            )
+            return
+
+        if not self.tracks:
+            await interaction.response.send_message(
+                "This playlist is empty.", 
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Disable radio if active
+        if self.ctx.guild:
+            _guild_radio_enabled[self.ctx.guild.id] = False
+
+        channel = user.voice.channel
+        voice: Optional[discord.VoiceClient] = self.ctx.voice_client
+
+        # Connect or move the bot to the caller's channel
+        if voice and voice.is_connected():
+            if voice.channel != channel:
+                await voice.move_to(channel)
+        else:
+            voice = await channel.connect()
+
+        queued = 0
+        for track in self.tracks:
+            file_path = track.get("path")
+            if not file_path:
+                continue
+
+            api = create_api_client()
+            try:
+                result = api.stream_audio_file(file_path)
+            finally:
+                api.close()
+
+            if result.get("status") != "success":
+                continue
+
+            stream_url = result.get("stream_url")
+            if not stream_url:
+                continue
+
+            title = track.get("name") or f"Track from {self.playlist_name}"
+            metadata = track.get("metadata") or {}
+            
+            # Extract duration from metadata length field
+            duration_seconds = None
+            length_str = metadata.get("length") or track.get("length")
+            if length_str:
+                duration_seconds = _parse_length_to_seconds(length_str)
+
+            await _queue_or_play_now(
+                self.ctx,
+                stream_url=stream_url,
+                title=str(title),
+                path=file_path,
+                metadata=metadata,
+                duration_seconds=duration_seconds,
+                silent=True,
+            )
+            queued += 1
+
+        if not queued:
+            await interaction.followup.send(
+                f"Could not queue any tracks from this playlist.",
+                ephemeral=True,
+            )
+        else:
+            queue_msg = await interaction.followup.send(
+                f"🎵 Queued **{self.playlist_name}** ({queued} track(s)).",
+                ephemeral=True,
+                wait=True,
+            )
+            # Auto-delete the queue confirmation after 5 seconds
+            async def _delete_queue_msg() -> None:
+                await asyncio.sleep(5)
+                try:
+                    await queue_msg.delete()
+                except Exception:
+                    pass
+            asyncio.create_task(_delete_queue_msg())
+        # Delete the shared playlist message after 120 seconds (only on success)
+            await self._schedule_message_deletion()
+
+    async def _on_copy(self, interaction: discord.Interaction) -> None:
+        """Copy this playlist to the user's own playlists."""
+        user = interaction.user
+        user_playlists = _get_or_create_user_playlists(user.id)
+        
+        # Generate a unique name if there's a conflict
+        base_name = self.playlist_name
+        new_name = base_name
+        counter = 1
+        while new_name in user_playlists:
+            new_name = f"{base_name} ({counter})"
+            counter += 1
+        
+        # Deep copy the tracks
+        copied_tracks = []
+        for track in self.tracks:
+            copied_tracks.append({
+                "id": track.get("id"),
+                "name": track.get("name"),
+                "path": track.get("path"),
+                "metadata": track.get("metadata", {}),
+                "added_at": time.time(),
+            })
+        
+        user_playlists[new_name] = copied_tracks
+        _save_user_playlists_to_disk()
+        
+        await interaction.response.send_message(
+            f"📋 Copied **{self.playlist_name}** to your playlists as **{new_name}** ({len(copied_tracks)} track(s)).",
+            ephemeral=True,
+        )
+
+        # Delete the shared playlist message after 120 seconds
+        await self._schedule_message_deletion()
+
+    async def _on_download(self, interaction: discord.Interaction) -> None:
+        """Download all files in this playlist as a ZIP."""
+        if not self.tracks:
+            await interaction.response.send_message(
+                "This playlist is empty.", 
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Collect all file paths
+        file_paths: List[str] = []
+        for track in self.tracks:
+            path = track.get("path")
+            if path:
+                file_paths.append(path)
+
+        if not file_paths:
+            await interaction.followup.send(
+                "No valid file paths found in this playlist.",
+                ephemeral=True,
+            )
+            return
+
+        # Send status message
+        status_embed = discord.Embed(
+            title="💾 Packing Playlist",
+            description=f"Packing **{self.playlist_name}** to ZIP...\n{len(file_paths)} file(s) to pack",
+            color=discord.Color.blue(),
+        )
+        status_msg = await interaction.followup.send(
+            embed=status_embed,
+            ephemeral=True,
+            wait=True,
+        )
+
+        try:
+            api = create_api_client()
+            try:
+                zip_content = api.create_zip(file_paths)
+            finally:
+                api.close()
+
+            zip_file = discord.File(
+                io.BytesIO(zip_content),
+                filename=f"{self.playlist_name}.zip"
+            )
+            
+            await interaction.followup.send(
+                f"Here's **{self.playlist_name}** ({len(file_paths)} file(s)):",
+                file=zip_file,
+                ephemeral=True,
+            )
+            
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ Error",
+                description=f"Failed to create ZIP file: {str(e)}",
+                color=discord.Color.red(),
+            )
+            try:
+                await status_msg.edit(embed=error_embed)
+            except Exception:
+                await interaction.followup.send(
+                    f"Failed to create ZIP file: {str(e)}",
+                    ephemeral=True,
+                )
+
+        # Delete the shared playlist message after 120 seconds
+        await self._schedule_message_deletion()
+
+    async def _schedule_message_deletion(self) -> None:
+        """Schedule the shared playlist message to be deleted after 120 seconds."""
+        if self.message:
+            async def _delete_after_delay() -> None:
+                await asyncio.sleep(120)
+                try:
+                    await self.message.delete()
+                except Exception:
+                    pass
+            asyncio.create_task(_delete_after_delay())
+            self.stop()  # Stop the view to prevent further interactions
+
+    async def on_timeout(self) -> None:
+        """Called when the view times out. Delete the message."""
+        if self.message:
+            try:
+                await self.message.delete()
+            except discord.errors.NotFound:
+                pass
+            except Exception:
+                pass
 
 
 class PlaylistEditOptionsView(discord.ui.View):
@@ -2126,15 +2566,31 @@ class PlayerView(discord.ui.View):
     ) -> None:  # pragma: no cover - UI callback
         await interaction.response.defer(ephemeral=True)
         voice = await self._get_voice()
+        guild = self.ctx.guild
+        
         if not voice:
             await _send_ephemeral_temporary(interaction, "No active playback.")
             return
 
         if voice.is_playing():
             voice.pause()
+            # Track when we paused
+            if guild:
+                info = _guild_now_playing.get(guild.id, {})
+                info["paused_at"] = time.time()
+                _guild_now_playing[guild.id] = info
             await _send_ephemeral_temporary(interaction, "Paused playback.")
         elif voice.is_paused():
             voice.resume()
+            # Add paused duration to total and clear paused_at
+            if guild:
+                info = _guild_now_playing.get(guild.id, {})
+                paused_at = info.get("paused_at")
+                if paused_at:
+                    paused_duration = time.time() - paused_at
+                    info["total_paused_time"] = info.get("total_paused_time", 0) + paused_duration
+                info["paused_at"] = None
+                _guild_now_playing[guild.id] = info
             await _send_ephemeral_temporary(interaction, "Resumed playback.")
         else:
             await _send_ephemeral_temporary(interaction, "Nothing is currently playing.")
@@ -2196,6 +2652,40 @@ class PlayerView(discord.ui.View):
             # Do not delete the player; the queue callback will either
             # start the next track or mark the player idle.
             await _send_ephemeral_temporary(interaction, "Skipped current track.")
+
+    @discord.ui.button(label="🔀 Shuffle", style=discord.ButtonStyle.secondary)
+    async def shuffle_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:  # pragma: no cover - UI callback
+        await interaction.response.defer(ephemeral=True)
+        guild = self.ctx.guild
+        
+        if not guild:
+            await _send_ephemeral_temporary(interaction, "Guild context unavailable.")
+            return
+        
+        queue = _guild_queue.get(guild.id, [])
+        if len(queue) < 2:
+            await _send_ephemeral_temporary(interaction, "Not enough songs in queue to shuffle.")
+            return
+        
+        random.shuffle(queue)
+        _guild_queue[guild.id] = queue
+        
+        # Update the player embed to reflect the new queue order
+        info = _guild_now_playing.get(guild.id, {})
+        await _send_player_controls(
+            self.ctx,
+            title=info.get("title", "Unknown"),
+            path=info.get("path"),
+            is_radio=self.is_radio,
+            metadata=info.get("metadata", {}),
+            duration_seconds=info.get("duration_seconds"),
+        )
+        
+        await _send_ephemeral_temporary(interaction, f"🔀 Shuffled {len(queue)} tracks in queue.")
 
     @discord.ui.button(label="ℹ Now Playing", style=discord.ButtonStyle.secondary)
     async def now_playing_button(
@@ -2471,10 +2961,89 @@ class PlayerView(discord.ui.View):
             )
             return
 
-        view = PlaylistPaginationView(ctx=self.ctx, playlists=playlists, user=user)
+        view = PlaylistPaginationView(ctx=self.ctx, playlists=playlists, user=user, interaction=interaction)
         embed = view.build_embed()
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+def _build_player_embed(
+    guild_id: int,
+    *,
+    title: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    duration_seconds: Optional[int] = None,
+    started_at: Optional[float] = None,
+    paused_at: Optional[float] = None,
+    total_paused_time: float = 0,
+    is_radio: bool = False,
+) -> discord.Embed:
+    """Build the Now Playing embed with all standard fields.
+    
+    This is the single source of truth for the player embed layout.
+    All player displays should use this function.
+    """
+    meta = metadata or {}
+    
+    embed = discord.Embed(title="Now Playing", description=title)
+
+    # Album art / cover
+    image_url = meta.get("image_url")
+    if image_url:
+        embed.set_thumbnail(url=image_url)
+
+    # Minimal song details for the main player: category & era only
+    if meta.get("category"):
+        embed.add_field(name="Category", value=str(meta.get("category")), inline=True)
+
+    era_val = meta.get("era")
+    if era_val is not None:
+        # If era is a dict, prefer the human-friendly name field.
+        if isinstance(era_val, dict):
+            era_text = str(era_val.get("name") or "").strip()
+        else:
+            era_text = str(era_val).strip()
+
+        if era_text:
+            embed.add_field(name="Era", value=era_text, inline=True)
+
+    # Duration + progress bar (accounting for pause time)
+    if duration_seconds and started_at:
+        now = time.time()
+        # If currently paused, don't count time since pause started
+        if paused_at:
+            raw_elapsed = paused_at - started_at
+        else:
+            raw_elapsed = now - started_at
+        # Subtract total time spent paused
+        elapsed = int(raw_elapsed - total_paused_time)
+        elapsed = max(0, elapsed)  # Ensure non-negative
+        progress = _format_progress_bar(elapsed, duration_seconds)
+        # Add paused indicator if currently paused
+        if paused_at:
+            progress = "⏸️ " + progress
+        embed.add_field(name="Progress", value=progress, inline=False)
+
+    # Previous song
+    prev_song = _guild_previous_song.get(guild_id)
+    if prev_song:
+        prev_title = prev_song.get("title", "Unknown")
+        embed.add_field(name="Previous", value=f"**{prev_title}**", inline=True)
+
+    # Queue count with next song name (Up Next)
+    queue = _guild_queue.get(guild_id, [])
+    if queue:
+        next_title = queue[0].get("title", "Unknown")
+        queue_text = f"{len(queue)} track(s)\nUp Next: **{next_title}**"
+        embed.add_field(name="Queue", value=queue_text, inline=True)
+
+    # Radio mode indicator only in the footer
+    if is_radio:
+        embed.set_footer(text="Radio mode is ON")
+    else:
+        embed.set_footer(text="Radio mode is OFF")
+
+    return embed
 
 
 async def _send_player_controls(
@@ -2513,45 +3082,17 @@ async def _send_player_controls(
     message_id = info.get("message_id")
     channel_id = info.get("channel_id")
 
-    # Build embed with rich metadata and a progress bar if we know duration.
-    meta = info.get("metadata") or {}
-    stored_duration = info.get("duration_seconds")
-    started_at = info.get("started_at")
-
-    embed = discord.Embed(title="Now Playing", description=title)
-
-    # Album art / cover ("album art")
-    image_url = meta.get("image_url")
-    if image_url:
-        embed.set_thumbnail(url=image_url)
-
-    # Minimal song details for the main player: category & era only
-    if meta.get("category"):
-        embed.add_field(name="Category", value=str(meta.get("category")), inline=True)
-
-    era_val = meta.get("era")
-    if era_val is not None:
-        # If era is a dict, prefer the human-friendly name field.
-        if isinstance(era_val, dict):
-            era_text = str(era_val.get("name") or "").strip()
-        else:
-            era_text = str(era_val).strip()
-
-        if era_text:
-            embed.add_field(name="Era", value=era_text, inline=True)
-
-    # Duration + progress bar only (no static length field here)
-    total_seconds = duration_seconds or stored_duration
-    if total_seconds and started_at:
-        elapsed = int(time.time() - started_at)
-        progress = _format_progress_bar(elapsed, total_seconds)
-        embed.add_field(name="Progress", value=progress, inline=False)
-
-    # Radio mode indicator only in the footer
-    if is_radio:
-        embed.set_footer(text="Radio mode is ON")
-    else:
-        embed.set_footer(text="Radio mode is OFF")
+    # Build embed using the centralized function
+    embed = _build_player_embed(
+        guild_id,
+        title=title,
+        metadata=info.get("metadata"),
+        duration_seconds=duration_seconds or info.get("duration_seconds"),
+        started_at=info.get("started_at"),
+        paused_at=info.get("paused_at"),
+        total_paused_time=info.get("total_paused_time", 0),
+        is_radio=is_radio,
+    )
 
     view = PlayerView(ctx=ctx, is_radio=is_radio)
 
@@ -2618,47 +3159,17 @@ async def _update_player_messages() -> None:
             # Message may have been deleted; stop tracking it.
             continue
 
-        # Re-use the same embed construction logic as _send_player_controls.
-        # We call it in "update" mode by bypassing message_id/channel_id
-        # handling and directly editing the fetched message.
-        meta = metadata
-        stored_duration = duration_seconds
-        started_at = info.get("started_at")
-
-        embed = discord.Embed(title="Now Playing", description=title)
-
-        # Album art / cover ("album art")
-        image_url = meta.get("image_url")
-        if image_url:
-            embed.set_thumbnail(url=image_url)
-
-        # Minimal song details for the main player: category & era only
-        if meta.get("category"):
-            embed.add_field(name="Category", value=str(meta.get("category")), inline=True)
-
-        era_val = meta.get("era")
-        if era_val is not None:
-            # If era is a dict, prefer the human-friendly name field.
-            if isinstance(era_val, dict):
-                era_text = str(era_val.get("name") or "").strip()
-            else:
-                era_text = str(era_val).strip()
-
-            if era_text:
-                embed.add_field(name="Era", value=era_text, inline=True)
-
-        # Duration + progress bar only (no static length field here)
-        total_seconds = stored_duration
-        if total_seconds and started_at:
-            elapsed = int(time.time() - started_at)
-            progress = _format_progress_bar(elapsed, total_seconds)
-            embed.add_field(name="Progress", value=progress, inline=False)
-
-        # Radio mode indicator only in the footer
-        if is_radio:
-            embed.set_footer(text="Radio mode is ON")
-        else:
-            embed.set_footer(text="Radio mode is OFF")
+        # Build embed using the centralized function
+        embed = _build_player_embed(
+            guild,
+            title=title,
+            metadata=metadata,
+            duration_seconds=duration_seconds,
+            started_at=info.get("started_at"),
+            paused_at=info.get("paused_at"),
+            total_paused_time=info.get("total_paused_time", 0),
+            is_radio=is_radio,
+        )
 
         view = PlayerView(ctx=info.get("ctx"), is_radio=is_radio) if info.get("ctx") else None
         try:
@@ -3014,7 +3525,7 @@ async def slash_playlists(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     ctx = await commands.Context.from_interaction(interaction)
 
-    view = PlaylistPaginationView(ctx=ctx, playlists=playlists, user=user)
+    view = PlaylistPaginationView(ctx=ctx, playlists=playlists, user=user, interaction=interaction)
     embed = view.build_embed()
 
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
@@ -4068,6 +4579,12 @@ async def playlist_play(ctx: commands.Context, *, name: str):
 
         title = track.get("name") or f"Playlist {name} item"
         metadata = track.get("metadata") or {}
+        
+        # Extract duration from metadata length field
+        duration_seconds = None
+        length_str = metadata.get("length") or track.get("length")
+        if length_str:
+            duration_seconds = _parse_length_to_seconds(length_str)
 
         await _queue_or_play_now(
             ctx,
@@ -4075,7 +4592,7 @@ async def playlist_play(ctx: commands.Context, *, name: str):
             title=str(title),
             path=file_path,
             metadata=metadata,
-            duration_seconds=None,
+            duration_seconds=duration_seconds,
             silent=True,
         )
         queued += 1
