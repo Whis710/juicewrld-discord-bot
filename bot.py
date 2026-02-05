@@ -838,6 +838,7 @@ class SingleSongResultView(discord.ui.View):
             f"Added `{song_name}` to playlist `{playlist_name}`.",
             ephemeral=True,
         )
+        _schedule_interaction_deletion(interaction, 30)
         
         # Delete the search result message
         try:
@@ -915,6 +916,7 @@ class SingleSongPlaylistCreateModal(discord.ui.Modal, title="Create New Playlist
             f"Created playlist `{name}` and added `{song_name}`.",
             ephemeral=True,
         )
+        _schedule_interaction_deletion(interaction, 5)
         
         # Delete the search result message
         try:
@@ -3700,6 +3702,7 @@ async def slash_search(interaction: discord.Interaction, query: str) -> None:
         await interaction.followup.send(
             f"No songs found for `" + query + "`.", ephemeral=True
         )
+        _schedule_interaction_deletion(interaction, 5)
         return
 
     total = results.get("count") if isinstance(results, dict) else None
