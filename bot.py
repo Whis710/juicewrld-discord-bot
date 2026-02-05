@@ -734,7 +734,17 @@ class SearchPaginationView(discord.ui.View):
 
 
 class PlaylistPaginationView(discord.ui.View):
-    """Paginated playlists with 5 per page and play buttons."""
+    """Paginated playlists with menu-first UI.
+    
+    Modes:
+    - "menu": Shows 3 action buttons (Queue, Add, Edit)
+    - "queue": Shows 1-5 buttons to queue a playlist
+    - "add": Shows ➕1-5 buttons to add current song to a playlist
+    - "edit_menu": Shows edit action buttons (Rename, Delete, Remove Song, Create)
+    - "rename": Shows 1-5 buttons to select a playlist to rename
+    - "delete": Shows 1-5 buttons to select a playlist to delete
+    - "remove_song": Shows 1-5 buttons to select a playlist to remove songs from
+    """
 
     def __init__(
         self,
@@ -742,16 +752,18 @@ class PlaylistPaginationView(discord.ui.View):
         ctx: commands.Context,
         playlists: Dict[str, List[Dict[str, Any]]],
         user: discord.abc.User,
+        mode: str = "menu",
     ) -> None:
         super().__init__(timeout=120)
         self.ctx = ctx
         self.user = user
+        self.mode = mode
         # Convert dict to list of (name, tracks) tuples for pagination
         self.playlist_items: List[tuple] = list(playlists.items())
         self.per_page = 5
         self.current_page = 0
         self.total_pages = max(1, math.ceil(len(self.playlist_items) / self.per_page))
-        self._update_button_states()
+        self._rebuild_buttons()
 
     def _get_page_playlists(self) -> List[tuple]:
         start = self.current_page * self.per_page
@@ -762,49 +774,221 @@ class PlaylistPaginationView(discord.ui.View):
         page_playlists = self._get_page_playlists()
         total = len(self.playlist_items)
 
-        header = f"Page {self.current_page + 1}/{self.total_pages} • {total} playlist(s)"
-        lines: List[str] = []
-        for idx, (name, tracks) in enumerate(page_playlists, start=1):
-            count = len(tracks)
-            if not count:
-                preview = "(empty)"
+        if self.mode == "menu":
+            description = f"{total} playlist(s)"
+            lines: List[str] = []
+            for idx, (name, tracks) in enumerate(page_playlists, start=1):
+                count = len(tracks)
+                if not count:
+                    preview = "(empty)"
+                else:
+                    preview_titles = [str(t.get("name") or t.get("id") or "?") for t in tracks[:2]]
+                    extra = f" +{count - 2} more" if count > 2 else ""
+                    preview = ", ".join(preview_titles) + extra
+                lines.append(f"**{idx}.** {name} ({count} tracks)\n    {preview}")
+            if lines:
+                description += "\n\n" + "\n".join(lines)
+            footer = "Select an action below."
+        elif self.mode == "edit_menu":
+            description = f"{total} playlist(s)\n\nSelect an edit action:"
+            footer = "Choose what you want to do with your playlists."
+        else:
+            header = f"Page {self.current_page + 1}/{self.total_pages} • {total} playlist(s)"
+            lines = []
+            for idx, (name, tracks) in enumerate(page_playlists, start=1):
+                count = len(tracks)
+                if not count:
+                    preview = "(empty)"
+                else:
+                    preview_titles = [str(t.get("name") or t.get("id") or "?") for t in tracks[:2]]
+                    extra = f" +{count - 2} more" if count > 2 else ""
+                    preview = ", ".join(preview_titles) + extra
+                lines.append(f"**{idx}.** {name} ({count} tracks)\n    {preview}")
+            description = header
+            if lines:
+                description += "\n\n" + "\n".join(lines)
+            
+            if self.mode == "queue":
+                footer = "Press 1–5 to queue that playlist."
+            elif self.mode == "add":
+                footer = "Press ➕1–5 to add the currently playing song to that playlist."
+            elif self.mode == "rename":
+                footer = "Press 1–5 to select a playlist to rename."
+            elif self.mode == "delete":
+                footer = "Press 1–5 to select a playlist to delete."
+            elif self.mode == "remove_song":
+                footer = "Press 1–5 to select a playlist to manage tracks."
             else:
-                preview_titles = [str(t.get("name") or t.get("id") or "?") for t in tracks[:2]]
-                extra = f" +{count - 2} more" if count > 2 else ""
-                preview = ", ".join(preview_titles) + extra
-            lines.append(f"**{idx}.** {name} ({count} tracks)\n    {preview}")
-
-        description = header
-        if lines:
-            description += "\n\n" + "\n".join(lines)
+                footer = ""
 
         embed = discord.Embed(
             title=f"{getattr(self.user, 'display_name', str(self.user))}'s Playlists",
             description=description,
         )
-        embed.set_footer(text="Use buttons 1–5 to play a playlist, or ➕1–5 to add the currently playing song to that playlist.")
+        embed.set_footer(text=footer)
         return embed
 
-    def _update_button_states(self) -> None:
-        """Enable/disable nav + slot buttons based on current page and playlists."""
+    def _rebuild_buttons(self) -> None:
+        """Rebuild buttons based on current mode."""
+        self.clear_items()
         total = len(self.playlist_items)
-        for child in self.children:
-            if not isinstance(child, discord.ui.Button):
-                continue
+        
+        if self.mode == "menu":
+            # Menu mode: show 3 action buttons
+            queue_btn = discord.ui.Button(label="🎵 Queue Playlist", style=discord.ButtonStyle.primary, row=0)
+            queue_btn.callback = self._on_queue_mode
+            self.add_item(queue_btn)
+            
+            add_btn = discord.ui.Button(label="➕ Add to Playlist", style=discord.ButtonStyle.success, row=0)
+            add_btn.callback = self._on_add_mode
+            self.add_item(add_btn)
+            
+            edit_btn = discord.ui.Button(label="✏️ Edit Playlist", style=discord.ButtonStyle.secondary, row=0)
+            edit_btn.callback = self._on_edit_mode
+            self.add_item(edit_btn)
+        elif self.mode == "edit_menu":
+            # Edit menu mode: show edit action buttons
+            rename_btn = discord.ui.Button(label="📝 Rename Playlist", style=discord.ButtonStyle.primary, row=0)
+            rename_btn.callback = self._on_rename_mode
+            self.add_item(rename_btn)
+            
+            delete_btn = discord.ui.Button(label="🗑️ Delete Playlist", style=discord.ButtonStyle.danger, row=0)
+            delete_btn.callback = self._on_delete_mode
+            self.add_item(delete_btn)
+            
+            remove_song_btn = discord.ui.Button(label="➖ Remove Song", style=discord.ButtonStyle.secondary, row=1)
+            remove_song_btn.callback = self._on_remove_song_mode
+            self.add_item(remove_song_btn)
+            
+            create_btn = discord.ui.Button(label="➕ Create Playlist", style=discord.ButtonStyle.success, row=1)
+            create_btn.callback = self._on_create_playlist
+            self.add_item(create_btn)
+            
+            back_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.secondary, row=1)
+            back_btn.callback = self._on_back
+            self.add_item(back_btn)
+        else:
+            # Selection mode: show pagination + numbered buttons + back
+            # Row 0: pagination
+            prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, row=0, disabled=self.current_page == 0)
+            prev_btn.callback = lambda i: self._change_page(i, -1)
+            self.add_item(prev_btn)
+            
+            next_btn = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary, row=0, disabled=self.current_page >= self.total_pages - 1)
+            next_btn.callback = lambda i: self._change_page(i, +1)
+            self.add_item(next_btn)
+            
+            back_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.danger, row=0)
+            back_btn.callback = self._on_back
+            self.add_item(back_btn)
+            
+            # Row 1: numbered buttons based on mode
+            for slot in range(5):
+                global_index = self.current_page * self.per_page + slot
+                disabled = global_index >= total
+                
+                if self.mode == "queue":
+                    label = str(slot + 1)
+                    style = discord.ButtonStyle.primary
+                    callback = self._make_queue_callback(slot)
+                elif self.mode == "add":
+                    label = f"➕{slot + 1}"
+                    style = discord.ButtonStyle.success
+                    callback = self._make_add_callback(slot)
+                elif self.mode == "rename":
+                    label = f"📝{slot + 1}"
+                    style = discord.ButtonStyle.primary
+                    callback = self._make_rename_callback(slot)
+                elif self.mode == "delete":
+                    label = f"🗑️{slot + 1}"
+                    style = discord.ButtonStyle.danger
+                    callback = self._make_delete_callback(slot)
+                elif self.mode == "remove_song":
+                    label = f"➖{slot + 1}"
+                    style = discord.ButtonStyle.secondary
+                    callback = self._make_remove_song_callback(slot)
+                else:
+                    continue
+                
+                btn = discord.ui.Button(label=label, style=style, row=1, disabled=disabled)
+                btn.callback = callback
+                self.add_item(btn)
 
-            label = child.label or ""
-            if label == "◀":
-                child.disabled = self.current_page == 0
-            elif label == "▶":
-                child.disabled = self.current_page >= self.total_pages - 1
-            elif label.isdigit():
-                slot_index = int(label) - 1
-                global_index = self.current_page * self.per_page + slot_index
-                child.disabled = global_index >= total
-            elif label.startswith("➕") and len(label) > 1 and label[1:].isdigit():
-                slot_index = int(label[1:]) - 1
-                global_index = self.current_page * self.per_page + slot_index
-                child.disabled = global_index >= total
+    def _make_queue_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_play(interaction, slot_index)
+        return callback
+
+    def _make_add_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_add_to_playlist(interaction, slot_index)
+        return callback
+
+    def _make_rename_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_rename_playlist(interaction, slot_index)
+        return callback
+
+    def _make_delete_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_delete_playlist(interaction, slot_index)
+        return callback
+
+    def _make_remove_song_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_remove_song_playlist(interaction, slot_index)
+        return callback
+
+    async def _on_queue_mode(self, interaction: discord.Interaction) -> None:
+        self.mode = "queue"
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_add_mode(self, interaction: discord.Interaction) -> None:
+        self.mode = "add"
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_edit_mode(self, interaction: discord.Interaction) -> None:
+        self.mode = "edit_menu"
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_rename_mode(self, interaction: discord.Interaction) -> None:
+        self.mode = "rename"
+        self.current_page = 0
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_delete_mode(self, interaction: discord.Interaction) -> None:
+        self.mode = "delete"
+        self.current_page = 0
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_remove_song_mode(self, interaction: discord.Interaction) -> None:
+        self.mode = "remove_song"
+        self.current_page = 0
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_create_playlist(self, interaction: discord.Interaction) -> None:
+        """Show modal to create a new playlist."""
+        modal = PlaylistCreateModal(self)
+        await interaction.response.send_modal(modal)
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        self.mode = "menu"
+        self.current_page = 0
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
     async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
         new_page = self.current_page + delta
@@ -813,7 +997,7 @@ class PlaylistPaginationView(discord.ui.View):
             return
 
         self.current_page = new_page
-        self._update_button_states()
+        self._rebuild_buttons()
         embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -1054,77 +1238,385 @@ class PlaylistPaginationView(discord.ui.View):
                 pass
         asyncio.create_task(_delete_after_delay())
 
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=0)
-    async def prev_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._change_page(interaction, -1)
+    async def _handle_rename_playlist(self, interaction: discord.Interaction, slot_index: int) -> None:
+        """Handle renaming a playlist."""
+        global_index = self.current_page * self.per_page + slot_index
+        if global_index < 0 or global_index >= len(self.playlist_items):
+            await interaction.response.send_message(
+                "No playlist in that position.", ephemeral=True
+            )
+            return
 
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=0)
-    async def next_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._change_page(interaction, +1)
+        playlist_name, _ = self.playlist_items[global_index]
+        modal = PlaylistRenameModalNew(self, playlist_name)
+        await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="1", style=discord.ButtonStyle.primary, row=1)
-    async def play_1(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._handle_play(interaction, 0)
+    async def _handle_delete_playlist(self, interaction: discord.Interaction, slot_index: int) -> None:
+        """Handle deleting a playlist."""
+        global_index = self.current_page * self.per_page + slot_index
+        if global_index < 0 or global_index >= len(self.playlist_items):
+            await interaction.response.send_message(
+                "No playlist in that position.", ephemeral=True
+            )
+            return
 
-    @discord.ui.button(label="2", style=discord.ButtonStyle.primary, row=1)
-    async def play_2(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._handle_play(interaction, 1)
+        playlist_name, _ = self.playlist_items[global_index]
+        user = interaction.user
+        playlists = _user_playlists.get(user.id) or {}
+        
+        if playlist_name in playlists:
+            del playlists[playlist_name]
+            if not playlists:
+                _user_playlists.pop(user.id, None)
+            _save_user_playlists_to_disk()
+        
+        # Refresh playlist items
+        self.playlist_items = list(playlists.items())
+        self.total_pages = max(1, math.ceil(len(self.playlist_items) / self.per_page))
+        if self.current_page >= self.total_pages:
+            self.current_page = max(0, self.total_pages - 1)
+        
+        # Go back to menu if no playlists left
+        if not playlists:
+            embed = discord.Embed(
+                title="Playlists",
+                description="You don't have any playlists yet.",
+            )
+            await interaction.response.edit_message(embed=embed, view=None)
+        else:
+            self.mode = "menu"
+            self._rebuild_buttons()
+            embed = self.build_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="3", style=discord.ButtonStyle.primary, row=1)
-    async def play_3(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._handle_play(interaction, 2)
+    async def _handle_remove_song_playlist(self, interaction: discord.Interaction, slot_index: int) -> None:
+        """Handle selecting a playlist to manage (remove songs)."""
+        global_index = self.current_page * self.per_page + slot_index
+        if global_index < 0 or global_index >= len(self.playlist_items):
+            await interaction.response.send_message(
+                "No playlist in that position.", ephemeral=True
+            )
+            return
 
-    @discord.ui.button(label="4", style=discord.ButtonStyle.primary, row=1)
-    async def play_4(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._handle_play(interaction, 3)
+        playlist_name, tracks = self.playlist_items[global_index]
+        user = interaction.user
+        
+        # Show edit options view for this playlist
+        edit_view = PlaylistEditOptionsView(
+            ctx=self.ctx,
+            user=user,
+            playlist_name=playlist_name,
+            tracks=tracks,
+            parent_view=self,
+        )
+        embed = edit_view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=edit_view)
 
-    @discord.ui.button(label="5", style=discord.ButtonStyle.primary, row=1)
-    async def play_5(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._handle_play(interaction, 4)
 
-    @discord.ui.button(label="➕1", style=discord.ButtonStyle.success, row=2)
-    async def add_1(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._handle_add_to_playlist(interaction, 0)
+class PlaylistEditOptionsView(discord.ui.View):
+    """View for editing a specific playlist (rename, delete, remove tracks)."""
 
-    @discord.ui.button(label="➕2", style=discord.ButtonStyle.success, row=2)
-    async def add_2(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        user: discord.abc.User,
+        playlist_name: str,
+        tracks: List[Dict[str, Any]],
+        parent_view: "PlaylistPaginationView",
     ) -> None:
-        await self._handle_add_to_playlist(interaction, 1)
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.user = user
+        self.playlist_name = playlist_name
+        self.tracks = tracks
+        self.parent_view = parent_view
+        self.current_page = 0
+        self.per_page = 5
+        self.total_pages = max(1, math.ceil(len(self.tracks) / self.per_page))
+        self._rebuild_buttons()
 
-    @discord.ui.button(label="➕3", style=discord.ButtonStyle.success, row=2)
-    async def add_3(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._handle_add_to_playlist(interaction, 2)
+    def build_embed(self) -> discord.Embed:
+        total = len(self.tracks)
+        header = f"Editing: **{self.playlist_name}** ({total} track(s))"
+        
+        if total == 0:
+            description = header + "\n\n(empty playlist)"
+        else:
+            start = self.current_page * self.per_page
+            end = start + self.per_page
+            page_tracks = self.tracks[start:end]
+            
+            lines: List[str] = []
+            for idx, track in enumerate(page_tracks, start=start + 1):
+                name = track.get("name") or track.get("id") or "Unknown"
+                lines.append(f"**{idx}.** {name}")
+            
+            description = header
+            if self.total_pages > 1:
+                description += f"\nPage {self.current_page + 1}/{self.total_pages}"
+            description += "\n\n" + "\n".join(lines)
 
-    @discord.ui.button(label="➕4", style=discord.ButtonStyle.success, row=2)
-    async def add_4(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._handle_add_to_playlist(interaction, 3)
+        embed = discord.Embed(
+            title=f"Edit Playlist",
+            description=description,
+        )
+        embed.set_footer(text="🗑️1-5 removes that track. Use Rename/Delete for playlist actions.")
+        return embed
 
-    @discord.ui.button(label="➕5", style=discord.ButtonStyle.success, row=2)
-    async def add_5(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self._handle_add_to_playlist(interaction, 4)
+    def _rebuild_buttons(self) -> None:
+        self.clear_items()
+        total = len(self.tracks)
+        
+        # Row 0: Back, Rename, Delete playlist
+        back_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.secondary, row=0)
+        back_btn.callback = self._on_back
+        self.add_item(back_btn)
+        
+        rename_btn = discord.ui.Button(label="Rename", style=discord.ButtonStyle.primary, row=0)
+        rename_btn.callback = self._on_rename
+        self.add_item(rename_btn)
+        
+        delete_btn = discord.ui.Button(label="Delete Playlist", style=discord.ButtonStyle.danger, row=0)
+        delete_btn.callback = self._on_delete_playlist
+        self.add_item(delete_btn)
+        
+        # Row 1: Pagination if needed
+        if self.total_pages > 1:
+            prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, row=1, disabled=self.current_page == 0)
+            prev_btn.callback = lambda i: self._change_page(i, -1)
+            self.add_item(prev_btn)
+            
+            next_btn = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary, row=1, disabled=self.current_page >= self.total_pages - 1)
+            next_btn.callback = lambda i: self._change_page(i, +1)
+            self.add_item(next_btn)
+        
+        # Row 2: Remove track buttons (🗑️1-5)
+        for slot in range(5):
+            global_index = self.current_page * self.per_page + slot
+            disabled = global_index >= total
+            
+            btn = discord.ui.Button(label=f"🗑️{slot + 1}", style=discord.ButtonStyle.danger, row=2, disabled=disabled)
+            btn.callback = self._make_remove_callback(slot)
+            self.add_item(btn)
+
+    def _make_remove_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_remove_track(interaction, slot_index)
+        return callback
+
+    async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
+        new_page = self.current_page + delta
+        if new_page < 0 or new_page >= self.total_pages:
+            await interaction.response.defer()
+            return
+        self.current_page = new_page
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        # Refresh the parent view's playlist data and go back
+        user_playlists = _user_playlists.get(self.user.id) or {}
+        self.parent_view.playlist_items = list(user_playlists.items())
+        self.parent_view.total_pages = max(1, math.ceil(len(self.parent_view.playlist_items) / self.parent_view.per_page))
+        self.parent_view.mode = "menu"
+        self.parent_view._rebuild_buttons()
+        embed = self.parent_view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+    async def _on_rename(self, interaction: discord.Interaction) -> None:
+        # Send a modal to get the new name
+        modal = PlaylistRenameModal(self)
+        await interaction.response.send_modal(modal)
+
+    async def _on_delete_playlist(self, interaction: discord.Interaction) -> None:
+        user = interaction.user
+        playlists = _user_playlists.get(user.id) or {}
+        
+        if self.playlist_name in playlists:
+            del playlists[self.playlist_name]
+            if not playlists:
+                _user_playlists.pop(user.id, None)
+            _save_user_playlists_to_disk()
+        
+        # Go back to parent view with refreshed data
+        user_playlists = _user_playlists.get(user.id) or {}
+        self.parent_view.playlist_items = list(user_playlists.items())
+        self.parent_view.total_pages = max(1, math.ceil(len(self.parent_view.playlist_items) / self.parent_view.per_page))
+        self.parent_view.mode = "menu"
+        self.parent_view._rebuild_buttons()
+        
+        if not user_playlists:
+            embed = discord.Embed(
+                title="Playlists",
+                description="You don't have any playlists yet.",
+            )
+            await interaction.response.edit_message(embed=embed, view=None)
+        else:
+            embed = self.parent_view.build_embed()
+            await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+    async def _handle_remove_track(self, interaction: discord.Interaction, slot_index: int) -> None:
+        global_index = self.current_page * self.per_page + slot_index
+        if global_index < 0 or global_index >= len(self.tracks):
+            await interaction.response.send_message("No track in that position.", ephemeral=True)
+            return
+        
+        user = interaction.user
+        playlists = _user_playlists.get(user.id) or {}
+        playlist = playlists.get(self.playlist_name)
+        
+        if playlist is None or global_index >= len(playlist):
+            await interaction.response.send_message("Track not found.", ephemeral=True)
+            return
+        
+        removed_track = playlist.pop(global_index)
+        self.tracks = playlist  # Update local reference
+        _save_user_playlists_to_disk()
+        
+        # Recalculate pages
+        self.total_pages = max(1, math.ceil(len(self.tracks) / self.per_page))
+        if self.current_page >= self.total_pages:
+            self.current_page = max(0, self.total_pages - 1)
+        
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class PlaylistRenameModal(discord.ui.Modal, title="Rename Playlist"):
+    """Modal for renaming a playlist."""
+    
+    new_name = discord.ui.TextInput(
+        label="New Playlist Name",
+        placeholder="Enter new name...",
+        max_length=100,
+    )
+
+    def __init__(self, edit_view: PlaylistEditOptionsView) -> None:
+        super().__init__()
+        self.edit_view = edit_view
+        self.new_name.default = edit_view.playlist_name
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        new_name = self.new_name.value.strip()
+        if not new_name:
+            await interaction.response.send_message("Name cannot be empty.", ephemeral=True)
+            return
+        
+        user = interaction.user
+        playlists = _user_playlists.get(user.id) or {}
+        old_name = self.edit_view.playlist_name
+        
+        if new_name == old_name:
+            await interaction.response.defer()
+            return
+        
+        if new_name in playlists:
+            await interaction.response.send_message(f"A playlist named `{new_name}` already exists.", ephemeral=True)
+            return
+        
+        if old_name in playlists:
+            playlists[new_name] = playlists.pop(old_name)
+            _save_user_playlists_to_disk()
+        
+        # Update the edit view
+        self.edit_view.playlist_name = new_name
+        self.edit_view.tracks = playlists.get(new_name, [])
+        
+        # Also update parent view's playlist items
+        self.edit_view.parent_view.playlist_items = list(playlists.items())
+        
+        embed = self.edit_view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self.edit_view)
+
+
+class PlaylistCreateModal(discord.ui.Modal, title="Create New Playlist"):
+    """Modal for creating a new playlist."""
+    
+    playlist_name = discord.ui.TextInput(
+        label="Playlist Name",
+        placeholder="Enter playlist name...",
+        max_length=100,
+    )
+
+    def __init__(self, pagination_view: PlaylistPaginationView) -> None:
+        super().__init__()
+        self.pagination_view = pagination_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        name = self.playlist_name.value.strip()
+        if not name:
+            await interaction.response.send_message("Name cannot be empty.", ephemeral=True)
+            return
+        
+        user = interaction.user
+        playlists = _get_or_create_user_playlists(user.id)
+        
+        if name in playlists:
+            await interaction.response.send_message(
+                f"You already have a playlist named `{name}`.", ephemeral=True
+            )
+            return
+        
+        playlists[name] = []
+        _save_user_playlists_to_disk()
+        
+        # Refresh the view
+        self.pagination_view.playlist_items = list(playlists.items())
+        self.pagination_view.total_pages = max(1, math.ceil(len(self.pagination_view.playlist_items) / self.pagination_view.per_page))
+        self.pagination_view.mode = "menu"
+        self.pagination_view._rebuild_buttons()
+        
+        embed = self.pagination_view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self.pagination_view)
+
+
+class PlaylistRenameModalNew(discord.ui.Modal, title="Rename Playlist"):
+    """Modal for renaming a playlist from the pagination view."""
+    
+    new_name = discord.ui.TextInput(
+        label="New Playlist Name",
+        placeholder="Enter new name...",
+        max_length=100,
+    )
+
+    def __init__(self, pagination_view: PlaylistPaginationView, old_name: str) -> None:
+        super().__init__()
+        self.pagination_view = pagination_view
+        self.old_name = old_name
+        self.new_name.default = old_name
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        new_name = self.new_name.value.strip()
+        if not new_name:
+            await interaction.response.send_message("Name cannot be empty.", ephemeral=True)
+            return
+        
+        user = interaction.user
+        playlists = _user_playlists.get(user.id) or {}
+        
+        if new_name == self.old_name:
+            await interaction.response.defer()
+            return
+        
+        if new_name in playlists:
+            await interaction.response.send_message(f"A playlist named `{new_name}` already exists.", ephemeral=True)
+            return
+        
+        if self.old_name in playlists:
+            playlists[new_name] = playlists.pop(self.old_name)
+            _save_user_playlists_to_disk()
+        
+        # Refresh the view
+        self.pagination_view.playlist_items = list(playlists.items())
+        self.pagination_view.total_pages = max(1, math.ceil(len(self.pagination_view.playlist_items) / self.pagination_view.per_page))
+        self.pagination_view.mode = "menu"
+        self.pagination_view._rebuild_buttons()
+        
+        embed = self.pagination_view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self.pagination_view)
 
 
 class NowPlayingInfoView(discord.ui.View):
@@ -2136,296 +2628,300 @@ async def slash_playlists(interaction: discord.Interaction) -> None:
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-@jw_group.command(name="playlist_create", description="Create a new empty playlist.")
-@app_commands.describe(name="Name for the new playlist")
-async def slash_playlist_create(interaction: discord.Interaction, name: str) -> None:
-    """Ephemeral slash command to create a new empty playlist."""
-
-    user = interaction.user
-    playlists = _get_or_create_user_playlists(user.id)
-
-    if name in playlists:
-        await interaction.response.send_message(
-            f"You already have a playlist named `{name}`.", ephemeral=True
-        )
-        # Schedule deletion after 5 seconds
-        async def _delete_after_delay() -> None:
-            await asyncio.sleep(5)
-            try:
-                await interaction.delete_original_response()
-            except Exception:
-                pass
-        asyncio.create_task(_delete_after_delay())
-        return
-
-    playlists[name] = []
-    _save_user_playlists_to_disk()
-
-    await interaction.response.send_message(
-        f"Created empty playlist `{name}`.", ephemeral=True
-    )
-    
-    # Schedule deletion after 5 seconds
-    async def _delete_after_delay() -> None:
-        await asyncio.sleep(5)
-        try:
-            await interaction.delete_original_response()
-        except Exception:
-            pass
-    asyncio.create_task(_delete_after_delay())
-
-
-@jw_group.command(name="playlist_rename", description="Rename one of your playlists.")
-@app_commands.describe(old="Current playlist name", new="New playlist name")
-async def slash_playlist_rename(interaction: discord.Interaction, old: str, new: str) -> None:
-    """Ephemeral slash command to rename a playlist."""
-
-    user = interaction.user
-    playlists = _user_playlists.get(user.id) or {}
-
-    if old not in playlists:
-        await interaction.response.send_message(
-            f"No playlist named `{old}` found.", ephemeral=True
-        )
-        # Schedule deletion after 5 seconds
-        async def _delete_after_delay() -> None:
-            await asyncio.sleep(5)
-            try:
-                await interaction.delete_original_response()
-            except Exception:
-                pass
-        asyncio.create_task(_delete_after_delay())
-        return
-
-    if new in playlists:
-        await interaction.response.send_message(
-            f"You already have a playlist named `{new}`.", ephemeral=True
-        )
-        # Schedule deletion after 5 seconds
-        async def _delete_after_delay() -> None:
-            await asyncio.sleep(5)
-            try:
-                await interaction.delete_original_response()
-            except Exception:
-                pass
-        asyncio.create_task(_delete_after_delay())
-        return
-
-    playlists[new] = playlists.pop(old)
-    _save_user_playlists_to_disk()
-
-    await interaction.response.send_message(
-        f"Renamed playlist `{old}` to `{new}`.", ephemeral=True
-    )
-    
-    # Schedule deletion after 5 seconds
-    async def _delete_after_delay() -> None:
-        await asyncio.sleep(5)
-        try:
-            await interaction.delete_original_response()
-        except Exception:
-            pass
-    asyncio.create_task(_delete_after_delay())
+# Deprecated: Use /jw playlists UI instead
+# @jw_group.command(name="playlist_create", description="Create a new empty playlist.")
+# @app_commands.describe(name="Name for the new playlist")
+# async def slash_playlist_create(interaction: discord.Interaction, name: str) -> None:
+#     """Ephemeral slash command to create a new empty playlist."""
+# 
+#     user = interaction.user
+#     playlists = _get_or_create_user_playlists(user.id)
+# 
+#     if name in playlists:
+#         await interaction.response.send_message(
+#             f"You already have a playlist named `{name}`.", ephemeral=True
+#         )
+#         # Schedule deletion after 5 seconds
+#         async def _delete_after_delay() -> None:
+#             await asyncio.sleep(5)
+#             try:
+#                 await interaction.delete_original_response()
+#             except Exception:
+#                 pass
+#         asyncio.create_task(_delete_after_delay())
+#         return
+# 
+#     playlists[name] = []
+#     _save_user_playlists_to_disk()
+# 
+#     await interaction.response.send_message(
+#         f"Created empty playlist `{name}`.", ephemeral=True
+#     )
+#     
+#     # Schedule deletion after 5 seconds
+#     async def _delete_after_delay() -> None:
+#         await asyncio.sleep(5)
+#         try:
+#             await interaction.delete_original_response()
+#         except Exception:
+#             pass
+#     asyncio.create_task(_delete_after_delay())
 
 
-@jw_group.command(name="playlist_delete", description="Delete one of your playlists.")
-@app_commands.describe(name="Name of the playlist to delete")
-async def slash_playlist_delete(interaction: discord.Interaction, name: str) -> None:
-    """Ephemeral slash command to delete a playlist."""
+# Deprecated: Use /jw playlists UI instead
+# @jw_group.command(name="playlist_rename", description="Rename one of your playlists.")
+# @app_commands.describe(old="Current playlist name", new="New playlist name")
+# async def slash_playlist_rename(interaction: discord.Interaction, old: str, new: str) -> None:
+#     """Ephemeral slash command to rename a playlist."""
+# 
+#     user = interaction.user
+#     playlists = _user_playlists.get(user.id) or {}
+# 
+#     if old not in playlists:
+#         await interaction.response.send_message(
+#             f"No playlist named `{old}` found.", ephemeral=True
+#         )
+#         # Schedule deletion after 5 seconds
+#         async def _delete_after_delay() -> None:
+#             await asyncio.sleep(5)
+#             try:
+#                 await interaction.delete_original_response()
+#             except Exception:
+#                 pass
+#         asyncio.create_task(_delete_after_delay())
+#         return
+# 
+#     if new in playlists:
+#         await interaction.response.send_message(
+#             f"You already have a playlist named `{new}`.", ephemeral=True
+#         )
+#         # Schedule deletion after 5 seconds
+#         async def _delete_after_delay() -> None:
+#             await asyncio.sleep(5)
+#             try:
+#                 await interaction.delete_original_response()
+#             except Exception:
+#                 pass
+#         asyncio.create_task(_delete_after_delay())
+#         return
+# 
+#     playlists[new] = playlists.pop(old)
+#     _save_user_playlists_to_disk()
+# 
+#     await interaction.response.send_message(
+#         f"Renamed playlist `{old}` to `{new}`.", ephemeral=True
+#     )
+#     
+#     # Schedule deletion after 5 seconds
+#     async def _delete_after_delay() -> None:
+#         await asyncio.sleep(5)
+#         try:
+#             await interaction.delete_original_response()
+#         except Exception:
+#             pass
+#     asyncio.create_task(_delete_after_delay())
 
-    user = interaction.user
-    playlists = _user_playlists.get(user.id) or {}
 
-    if name not in playlists:
-        await interaction.response.send_message(
-            f"No playlist named `{name}` found.", ephemeral=True
-        )
-        # Schedule deletion after 5 seconds
-        async def _delete_after_delay() -> None:
-            await asyncio.sleep(5)
-            try:
-                await interaction.delete_original_response()
-            except Exception:
-                pass
-        asyncio.create_task(_delete_after_delay())
-        return
+# Deprecated: Use /jw playlists UI instead
+# @jw_group.command(name="playlist_delete", description="Delete one of your playlists.")
+# @app_commands.describe(name="Name of the playlist to delete")
+# async def slash_playlist_delete(interaction: discord.Interaction, name: str) -> None:
+#     """Ephemeral slash command to delete a playlist."""
+# 
+#     user = interaction.user
+#     playlists = _user_playlists.get(user.id) or {}
+# 
+#     if name not in playlists:
+#         await interaction.response.send_message(
+#             f"No playlist named `{name}` found.", ephemeral=True
+#         )
+#         # Schedule deletion after 5 seconds
+#         async def _delete_after_delay() -> None:
+#             await asyncio.sleep(5)
+#             try:
+#                 await interaction.delete_original_response()
+#             except Exception:
+#                 pass
+#         asyncio.create_task(_delete_after_delay())
+#         return
+# 
+#     del playlists[name]
+#     if not playlists:
+#         _user_playlists.pop(user.id, None)
+# 
+#     _save_user_playlists_to_disk()
+# 
+#     await interaction.response.send_message(
+#         f"Deleted playlist `{name}`.", ephemeral=True
+#     )
+#     
+#     # Schedule deletion after 5 seconds
+#     async def _delete_after_delay() -> None:
+#         await asyncio.sleep(5)
+#         try:
+#             await interaction.delete_original_response()
+#         except Exception:
+#             pass
+#     asyncio.create_task(_delete_after_delay())
 
-    del playlists[name]
-    if not playlists:
-        _user_playlists.pop(user.id, None)
 
-    _save_user_playlists_to_disk()
-
-    await interaction.response.send_message(
-        f"Deleted playlist `{name}`.", ephemeral=True
-    )
-    
-    # Schedule deletion after 5 seconds
-    async def _delete_after_delay() -> None:
-        await asyncio.sleep(5)
-        try:
-            await interaction.delete_original_response()
-        except Exception:
-            pass
-    asyncio.create_task(_delete_after_delay())
-
-
-@jw_group.command(name="playlist_add_song", description="Add a song to one of your playlists.")
-@app_commands.describe(playlist_name="Name of the playlist", song_id="Numeric Juice WRLD song ID")
-async def slash_playlist_add_song(interaction: discord.Interaction, playlist_name: str, song_id: int) -> None:
-    """Ephemeral slash command to add a song to a playlist."""
-
-    await interaction.response.defer(ephemeral=True, thinking=True)
-
-    user = interaction.user
-    playlists = _get_or_create_user_playlists(user.id)
-    playlist = playlists.setdefault(playlist_name, [])
-
-    # Resolve a comp file path for this song using the player endpoint.
-    api = create_api_client()
-    try:
-        player_result = api.play_juicewrld_song(song_id)
-    finally:
-        api.close()
-
-    status = player_result.get("status")
-    error_detail = player_result.get("error")
-
-    if status == "not_found":
-        await interaction.followup.send(
-            f"No playable song found for ID `{song_id}` in the player endpoint; "
-            "it may not be available for streaming yet.",
-            ephemeral=True,
-        )
-        # Schedule deletion after 5 seconds
-        async def _delete_after_delay() -> None:
-            await asyncio.sleep(5)
-            try:
-                await interaction.delete_original_response()
-            except Exception:
-                pass
-        asyncio.create_task(_delete_after_delay())
-        return
-
-    if status and status not in {"success", "file_not_found_but_url_provided"}:
-        if error_detail:
-            await interaction.followup.send(
-                f"Could not get a playable file path for song `{song_id}` "
-                f"(status: {status}). Details: {error_detail}",
-                ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(
-                f"Could not get a playable file path for song `{song_id}` "
-                f"(status: {status}).",
-                ephemeral=True,
-            )
-        # Schedule deletion after 5 seconds
-        async def _delete_after_delay() -> None:
-            await asyncio.sleep(5)
-            try:
-                await interaction.delete_original_response()
-            except Exception:
-                pass
-        asyncio.create_task(_delete_after_delay())
-        return
-
-    file_path = player_result.get("file_path")
-    if not file_path:
-        await interaction.followup.send(
-            f"Player endpoint did not return a comp file path for song `{song_id}`; "
-            "cannot add to playlist.",
-            ephemeral=True,
-        )
-        # Schedule deletion after 5 seconds
-        async def _delete_after_delay() -> None:
-            await asyncio.sleep(5)
-            try:
-                await interaction.delete_original_response()
-            except Exception:
-                pass
-        asyncio.create_task(_delete_after_delay())
-        return
-
-    # Fetch full song metadata for display and future playback.
-    api = create_api_client()
-    try:
-        song_obj = api.get_song(song_id)
-    except Exception:
-        song_obj = None
-    finally:
-        api.close()
-
-    if song_obj is not None:
-        image_url = getattr(song_obj, "image_url", None)
-        if image_url and isinstance(image_url, str) and image_url.startswith("/"):
-            image_url = f"{JUICEWRLD_API_BASE_URL}{image_url}"
-        meta = _build_song_metadata_from_song(
-            song_obj,
-            path=file_path,
-            image_url=image_url,
-        )
-    else:
-        meta = {"id": song_id, "path": file_path}
-
-    title = str(meta.get("name") or f"Song {song_id}")
-    song_id_val = meta.get("id") or meta.get("song_id")
-
-    # Avoid duplicates: match by song ID or path
-    for track in playlist:
-        if song_id_val is not None and track.get("id") == song_id_val:
-            await interaction.followup.send(
-                f"`{title}` is already in playlist `{playlist_name}`.",
-                ephemeral=True,
-            )
-            # Schedule deletion after 5 seconds
-            async def _delete_after_delay() -> None:
-                await asyncio.sleep(5)
-                try:
-                    await interaction.delete_original_response()
-                except Exception:
-                    pass
-            asyncio.create_task(_delete_after_delay())
-            return
-        if file_path and track.get("path") == file_path:
-            await interaction.followup.send(
-                f"`{title}` is already in playlist `{playlist_name}`.",
-                ephemeral=True,
-            )
-            # Schedule deletion after 5 seconds
-            async def _delete_after_delay() -> None:
-                await asyncio.sleep(5)
-                try:
-                    await interaction.delete_original_response()
-                except Exception:
-                    pass
-            asyncio.create_task(_delete_after_delay())
-            return
-
-    playlist.append(
-        {
-            "id": song_id_val,
-            "name": title,
-            "path": file_path,
-            "metadata": meta,
-            "added_at": time.time(),
-        }
-    )
-
-    _save_user_playlists_to_disk()
-    await interaction.followup.send(
-        f"Added `{title}` (ID `{song_id}`) to playlist `{playlist_name}`.",
-        ephemeral=True,
-    )
-    
-    # Schedule deletion after 5 seconds
-    async def _delete_after_delay() -> None:
-        await asyncio.sleep(5)
-        try:
-            await interaction.delete_original_response()
-        except Exception:
-            pass
-    asyncio.create_task(_delete_after_delay())
+# Deprecated: Use /jw playlists UI instead
+# @jw_group.command(name="playlist_add_song", description="Add a song to one of your playlists.")
+# @app_commands.describe(playlist_name="Name of the playlist", song_id="Numeric Juice WRLD song ID")
+# async def slash_playlist_add_song(interaction: discord.Interaction, playlist_name: str, song_id: int) -> None:
+#     """Ephemeral slash command to add a song to a playlist."""
+# 
+#     await interaction.response.defer(ephemeral=True, thinking=True)
+# 
+#     user = interaction.user
+#     playlists = _get_or_create_user_playlists(user.id)
+#     playlist = playlists.setdefault(playlist_name, [])
+# 
+#     # Resolve a comp file path for this song using the player endpoint.
+#     api = create_api_client()
+#     try:
+#         player_result = api.play_juicewrld_song(song_id)
+#     finally:
+#         api.close()
+# 
+#     status = player_result.get("status")
+#     error_detail = player_result.get("error")
+# 
+#     if status == "not_found":
+#         await interaction.followup.send(
+#             f"No playable song found for ID `{song_id}` in the player endpoint; "
+#             "it may not be available for streaming yet.",
+#             ephemeral=True,
+#         )
+#         # Schedule deletion after 5 seconds
+#         async def _delete_after_delay() -> None:
+#             await asyncio.sleep(5)
+#             try:
+#                 await interaction.delete_original_response()
+#             except Exception:
+#                 pass
+#         asyncio.create_task(_delete_after_delay())
+#         return
+# 
+#     if status and status not in {"success", "file_not_found_but_url_provided"}:
+#         if error_detail:
+#             await interaction.followup.send(
+#                 f"Could not get a playable file path for song `{song_id}` "
+#                 f"(status: {status}). Details: {error_detail}",
+#                 ephemeral=True,
+#             )
+#         else:
+#             await interaction.followup.send(
+#                 f"Could not get a playable file path for song `{song_id}` "
+#                 f"(status: {status}).",
+#                 ephemeral=True,
+#             )
+#         # Schedule deletion after 5 seconds
+#         async def _delete_after_delay() -> None:
+#             await asyncio.sleep(5)
+#             try:
+#                 await interaction.delete_original_response()
+#             except Exception:
+#                 pass
+#         asyncio.create_task(_delete_after_delay())
+#         return
+# 
+#     file_path = player_result.get("file_path")
+#     if not file_path:
+#         await interaction.followup.send(
+#             f"Player endpoint did not return a comp file path for song `{song_id}`; "
+#             "cannot add to playlist.",
+#             ephemeral=True,
+#         )
+#         # Schedule deletion after 5 seconds
+#         async def _delete_after_delay() -> None:
+#             await asyncio.sleep(5)
+#             try:
+#                 await interaction.delete_original_response()
+#             except Exception:
+#                 pass
+#         asyncio.create_task(_delete_after_delay())
+#         return
+# 
+#     # Fetch full song metadata for display and future playback.
+#     api = create_api_client()
+#     try:
+#         song_obj = api.get_song(song_id)
+#     except Exception:
+#         song_obj = None
+#     finally:
+#         api.close()
+# 
+#     if song_obj is not None:
+#         image_url = getattr(song_obj, "image_url", None)
+#         if image_url and isinstance(image_url, str) and image_url.startswith("/"):
+#             image_url = f"{JUICEWRLD_API_BASE_URL}{image_url}"
+#         meta = _build_song_metadata_from_song(
+#             song_obj,
+#             path=file_path,
+#             image_url=image_url,
+#         )
+#     else:
+#         meta = {"id": song_id, "path": file_path}
+# 
+#     title = str(meta.get("name") or f"Song {song_id}")
+#     song_id_val = meta.get("id") or meta.get("song_id")
+# 
+#     # Avoid duplicates: match by song ID or path
+#     for track in playlist:
+#         if song_id_val is not None and track.get("id") == song_id_val:
+#             await interaction.followup.send(
+#                 f"`{title}` is already in playlist `{playlist_name}`.",
+#                 ephemeral=True,
+#             )
+#             # Schedule deletion after 5 seconds
+#             async def _delete_after_delay() -> None:
+#                 await asyncio.sleep(5)
+#                 try:
+#                     await interaction.delete_original_response()
+#                 except Exception:
+#                     pass
+#             asyncio.create_task(_delete_after_delay())
+#             return
+#         if file_path and track.get("path") == file_path:
+#             await interaction.followup.send(
+#                 f"`{title}` is already in playlist `{playlist_name}`.",
+#                 ephemeral=True,
+#             )
+#             # Schedule deletion after 5 seconds
+#             async def _delete_after_delay() -> None:
+#                 await asyncio.sleep(5)
+#                 try:
+#                     await interaction.delete_original_response()
+#                 except Exception:
+#                     pass
+#             asyncio.create_task(_delete_after_delay())
+#             return
+# 
+#     playlist.append(
+#         {
+#             "id": song_id_val,
+#             "name": title,
+#             "path": file_path,
+#             "metadata": meta,
+#             "added_at": time.time(),
+#         }
+#     )
+# 
+#     _save_user_playlists_to_disk()
+#     await interaction.followup.send(
+#         f"Added `{title}` (ID `{song_id}`) to playlist `{playlist_name}`.",
+#         ephemeral=True,
+#     )
+#     
+#     # Schedule deletion after 5 seconds
+#     async def _delete_after_delay() -> None:
+#         await asyncio.sleep(5)
+#         try:
+#             await interaction.delete_original_response()
+#         except Exception:
+#             pass
+#     asyncio.create_task(_delete_after_delay())
 
 
 @bot.command(name="search")
