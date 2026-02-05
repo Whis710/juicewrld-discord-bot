@@ -1641,6 +1641,18 @@ class PlaylistPaginationView(discord.ui.View):
             )
             return
 
+        # Send status message
+        status_embed = discord.Embed(
+            title="💾 Packing Playlist",
+            description=f"Packing **{playlist_name}** to ZIP...\n{len(file_paths)} file(s) to pack",
+            color=discord.Color.blue(),
+        )
+        status_msg = await interaction.followup.send(
+            embed=status_embed,
+            ephemeral=True,
+            wait=True,
+        )
+
         try:
             # Use the API to create a ZIP file
             api = create_api_client()
@@ -1660,11 +1672,26 @@ class PlaylistPaginationView(discord.ui.View):
                 file=zip_file,
                 ephemeral=True,
             )
+            
+            # Delete the status message
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
         except Exception as e:
-            await interaction.followup.send(
-                f"Failed to create ZIP file: {str(e)}",
-                ephemeral=True,
+            # Update status message to show error
+            error_embed = discord.Embed(
+                title="❌ Error",
+                description=f"Failed to create ZIP file: {str(e)}",
+                color=discord.Color.red(),
             )
+            try:
+                await status_msg.edit(embed=error_embed)
+            except Exception:
+                await interaction.followup.send(
+                    f"Failed to create ZIP file: {str(e)}",
+                    ephemeral=True,
+                )
 
 
 class PlaylistEditOptionsView(discord.ui.View):
