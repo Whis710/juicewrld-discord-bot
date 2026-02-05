@@ -536,7 +536,13 @@ def _set_now_playing(
 
 
 class SearchPaginationView(discord.ui.View):
-    """Paginated search results with 5 songs per page and play buttons."""
+    """Paginated search results with 5 songs per page and play buttons.
+    
+    Modes:
+    - "play": Shows 1-5 buttons to play a song
+    - "add": Shows ➕1-5 buttons to select a song to add to playlist
+    - "select_playlist": Shows user's playlists to choose where to add the song
+    """
 
     def __init__(
         self,
@@ -547,7 +553,7 @@ class SearchPaginationView(discord.ui.View):
         total_count: Optional[int] = None,
         is_ephemeral: bool = False,
     ) -> None:
-        super().__init__(timeout=120)
+        super().__init__(timeout=60)
         self.ctx = ctx
         self.songs = songs
         self.query = query
@@ -557,8 +563,12 @@ class SearchPaginationView(discord.ui.View):
         self.total_count = total_count or len(songs)
         self.is_ephemeral = is_ephemeral
         self.message: Optional[discord.Message] = None  # Set after sending
-        # Buttons are attached via decorators; update their initial enabled/disabled state.
-        self._update_button_states()
+        self.mode = "play"  # "play", "add", or "select_playlist"
+        self.song_to_add: Optional[Any] = None  # Song selected for adding to playlist
+        self.playlist_items: List[tuple] = []  # For playlist selection mode
+        self.playlist_page = 0
+        # Build initial buttons dynamically
+        self._rebuild_buttons()
 
     def _get_page_songs(self) -> List[Any]:
         start = self.current_page * self.per_page
@@ -566,6 +576,9 @@ class SearchPaginationView(discord.ui.View):
         return self.songs[start:end]
 
     def build_embed(self) -> discord.Embed:
+        if self.mode == "select_playlist":
+            return self._build_playlist_select_embed()
+        
         page_songs = self._get_page_songs()
         total_results = self.total_count
 
@@ -587,11 +600,57 @@ class SearchPaginationView(discord.ui.View):
             description += "\n\n" + "\n".join(lines)
 
         embed = discord.Embed(title="Search Results", description=description)
-        embed.set_footer(text="Use buttons 1–5 below to play a song from this page.")
+        if self.mode == "add":
+            embed.set_footer(text="Select a song (1–5) to add to a playlist.")
+        else:
+            embed.set_footer(text="Use buttons 1–5 below to play a song from this page.")
+        return embed
+
+    def _build_playlist_select_embed(self) -> discord.Embed:
+        """Build embed for playlist selection mode."""
+        song_name = getattr(self.song_to_add, "name", "Unknown") if self.song_to_add else "Unknown"
+        total = len(self.playlist_items)
+        total_pages = max(1, math.ceil(total / self.per_page))
+        
+        header = f"Page {self.playlist_page + 1}/{total_pages} • Select playlist for **{song_name}**"
+        lines: List[str] = []
+        start = self.playlist_page * self.per_page
+        page_playlists = self.playlist_items[start:start + self.per_page]
+        
+        for idx, (name, tracks) in enumerate(page_playlists, start=1):
+            count = len(tracks)
+            lines.append(f"**{idx}.** {name} ({count} tracks)")
+        
+        if not lines:
+            lines.append("No playlists yet. Use `!jw playlist create <name>` to create one.")
+        
+        description = header + "\n\n" + "\n".join(lines)
+        embed = discord.Embed(title="Add to Playlist", description=description)
+        embed.set_footer(text="Select a playlist (1–5) or go back.")
         return embed
 
     def _update_button_states(self) -> None:
         """Enable/disable nav + slot buttons based on current page and results."""
+
+        if self.mode == "select_playlist":
+            total = len(self.playlist_items)
+            total_pages = max(1, math.ceil(total / self.per_page))
+            for child in self.children:
+                if not isinstance(child, discord.ui.Button):
+                    continue
+                label = child.label or ""
+                if label == "◀":
+                    child.disabled = self.playlist_page == 0
+                elif label == "▶":
+                    child.disabled = self.playlist_page >= total_pages - 1
+                elif label.isdigit() or (len(label) > 1 and label[1:].isdigit()):
+                    # Handle both "1" and "➕1" style labels
+                    digit = label[-1] if label[-1].isdigit() else label
+                    if digit.isdigit():
+                        slot_index = int(digit) - 1
+                        global_index = self.playlist_page * self.per_page + slot_index
+                        child.disabled = global_index >= total
+            return
 
         total = len(self.songs)
         for child in self.children:
@@ -603,12 +662,27 @@ class SearchPaginationView(discord.ui.View):
                 child.disabled = self.current_page == 0
             elif label == "▶":
                 child.disabled = self.current_page >= self.total_pages - 1
-            elif label.isdigit():
-                slot_index = int(label) - 1
-                global_index = self.current_page * self.per_page + slot_index
-                child.disabled = global_index >= total
+            elif label.isdigit() or (len(label) > 1 and label[1:].isdigit()):
+                # Handle both "1" and "➕1" style labels
+                digit = label[-1] if label[-1].isdigit() else label
+                if digit.isdigit():
+                    slot_index = int(digit) - 1
+                    global_index = self.current_page * self.per_page + slot_index
+                    child.disabled = global_index >= total
 
     async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
+        if self.mode == "select_playlist":
+            total_pages = max(1, math.ceil(len(self.playlist_items) / self.per_page))
+            new_page = self.playlist_page + delta
+            if new_page < 0 or new_page >= total_pages:
+                await interaction.response.defer()
+                return
+            self.playlist_page = new_page
+            self._rebuild_buttons()
+            embed = self.build_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+
         new_page = self.current_page + delta
         if new_page < 0 or new_page >= self.total_pages:
             await interaction.response.defer()
@@ -659,15 +733,22 @@ class SearchPaginationView(discord.ui.View):
             interaction, f"Requested playback for `{name}` (ID `{song_id}`)."
         )
 
-        # Delete or edit the search results message after 5 seconds
-        await asyncio.sleep(5)
+        # Delete or edit the search results message
         try:
             if self.is_ephemeral:
-                # Ephemeral messages can't be deleted, so edit to remove buttons
+                # Edit to show closed message, then delete after 5 seconds
                 embed = discord.Embed(title="Search Results", description="Song selected. Search closed.")
                 await interaction.edit_original_response(embed=embed, view=None)
+                
+                async def _delete_after_delay() -> None:
+                    await asyncio.sleep(5)
+                    try:
+                        await interaction.delete_original_response()
+                    except Exception:
+                        pass
+                asyncio.create_task(_delete_after_delay())
             else:
-                # Regular messages can be deleted
+                # Regular messages can be deleted immediately
                 msg = self.message or interaction.message
                 if msg:
                     await msg.delete()
@@ -676,61 +757,251 @@ class SearchPaginationView(discord.ui.View):
 
         self.stop()
 
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=0)
-    async def prev_page(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:  # pragma: no cover - UI callback
-        await self._change_page(interaction, -1)
+    async def _handle_add_select(self, interaction: discord.Interaction, slot_index: int) -> None:
+        """Handle selecting a song to add to a playlist."""
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the user who ran this search can use these buttons.",
+                ephemeral=True,
+            )
+            return
 
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=0)
-    async def next_page(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:  # pragma: no cover - UI callback
-        await self._change_page(interaction, +1)
+        global_index = self.current_page * self.per_page + slot_index
+        if global_index < 0 or global_index >= len(self.songs):
+            await interaction.response.send_message(
+                "No song in that position on this page.",
+                ephemeral=True,
+            )
+            return
 
-    @discord.ui.button(label="1", style=discord.ButtonStyle.primary, row=1)
-    async def play_1(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:  # pragma: no cover - UI callback
-        await self._handle_play(interaction, 0)
+        self.song_to_add = self.songs[global_index]
+        
+        # Load user's playlists
+        user_playlists = _get_or_create_user_playlists(interaction.user.id)
+        self.playlist_items = list(user_playlists.items())
+        self.playlist_page = 0
+        
+        if not self.playlist_items:
+            await interaction.response.send_message(
+                "You don't have any playlists yet. Use `!jw playlist create <name>` to create one.",
+                ephemeral=True,
+            )
+            return
+        
+        self.mode = "select_playlist"
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="2", style=discord.ButtonStyle.primary, row=1)
-    async def play_2(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:  # pragma: no cover - UI callback
-        await self._handle_play(interaction, 1)
+    async def _handle_playlist_select(self, interaction: discord.Interaction, slot_index: int) -> None:
+        """Handle selecting a playlist to add the song to."""
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the user who ran this search can use these buttons.",
+                ephemeral=True,
+            )
+            return
 
-    @discord.ui.button(label="3", style=discord.ButtonStyle.primary, row=1)
-    async def play_3(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:  # pragma: no cover - UI callback
-        await self._handle_play(interaction, 2)
+        global_index = self.playlist_page * self.per_page + slot_index
+        if global_index < 0 or global_index >= len(self.playlist_items):
+            await interaction.response.send_message(
+                "No playlist in that position.",
+                ephemeral=True,
+            )
+            return
 
-    @discord.ui.button(label="4", style=discord.ButtonStyle.primary, row=1)
-    async def play_4(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:  # pragma: no cover - UI callback
-        await self._handle_play(interaction, 3)
+        playlist_name, playlist_tracks = self.playlist_items[global_index]
+        song = self.song_to_add
+        
+        if song is None:
+            await interaction.response.send_message(
+                "No song selected.",
+                ephemeral=True,
+            )
+            return
 
-    @discord.ui.button(label="5", style=discord.ButtonStyle.primary, row=1)
-    async def play_5(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:  # pragma: no cover - UI callback
-        await self._handle_play(interaction, 4)
+        # Build song data
+        song_id = getattr(song, "id", None)
+        song_name = getattr(song, "name", getattr(song, "title", "Unknown"))
+        song_path = getattr(song, "path", None)
+        
+        # Check for duplicates
+        for track in playlist_tracks:
+            if song_id is not None and track.get("id") == song_id:
+                await interaction.response.send_message(
+                    f"`{song_name}` is already in playlist `{playlist_name}`.",
+                    ephemeral=True,
+                )
+                return
+            if song_path and track.get("path") == song_path:
+                await interaction.response.send_message(
+                    f"`{song_name}` is already in playlist `{playlist_name}`.",
+                    ephemeral=True,
+                )
+                return
+
+        # Build metadata
+        metadata = _build_song_metadata_from_song(song, path=song_path)
+        
+        # Add to playlist
+        playlist_tracks.append({
+            "id": song_id,
+            "name": song_name,
+            "path": song_path,
+            "metadata": metadata,
+            "added_at": time.time(),
+        })
+        
+        _save_user_playlists_to_disk()
+        
+        # Return to play mode and update the search view
+        self.mode = "play"
+        self.song_to_add = None
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        
+        # Edit the search view message and send confirmation
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(
+            f"Added `{song_name}` to playlist `{playlist_name}`.",
+            ephemeral=True,
+        )
+
+    def _rebuild_buttons(self) -> None:
+        """Rebuild buttons based on current mode."""
+        self.clear_items()
+        
+        if self.mode == "select_playlist":
+            # Playlist selection mode
+            total = len(self.playlist_items)
+            total_pages = max(1, math.ceil(total / self.per_page))
+            
+            # Row 0: pagination (only if needed) + back
+            if self.playlist_page > 0:
+                prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, row=0)
+                prev_btn.callback = lambda i: self._change_page(i, -1)
+                self.add_item(prev_btn)
+            
+            if self.playlist_page < total_pages - 1:
+                next_btn = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary, row=0)
+                next_btn.callback = lambda i: self._change_page(i, +1)
+                self.add_item(next_btn)
+            
+            back_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.danger, row=0)
+            back_btn.callback = self._on_back_to_search
+            self.add_item(back_btn)
+            
+            # Row 1: playlist selection buttons (only for items that exist)
+            for slot in range(5):
+                global_index = self.playlist_page * self.per_page + slot
+                if global_index >= total:
+                    break
+                btn = discord.ui.Button(label=str(slot + 1), style=discord.ButtonStyle.success, row=1)
+                btn.callback = self._make_playlist_select_callback(slot)
+                self.add_item(btn)
+        else:
+            # Play or Add mode
+            # Row 0: nav buttons (only if needed) + add to playlist toggle
+            if self.current_page > 0:
+                prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, row=0)
+                prev_btn.callback = lambda i: self._change_page(i, -1)
+                self.add_item(prev_btn)
+            
+            if self.current_page < self.total_pages - 1:
+                next_btn = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary, row=0)
+                next_btn.callback = lambda i: self._change_page(i, +1)
+                self.add_item(next_btn)
+            
+            if self.mode == "add":
+                # Show "Back" button to return to play mode
+                back_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.danger, row=0)
+                back_btn.callback = self._on_back_to_play
+                self.add_item(back_btn)
+            else:
+                # Show "Add to Playlist" toggle button
+                add_btn = discord.ui.Button(label="➕ Add to Playlist", style=discord.ButtonStyle.success, row=0)
+                add_btn.callback = self._on_add_mode
+                self.add_item(add_btn)
+            
+            # Row 1: numbered buttons (only for items that exist)
+            total = len(self.songs)
+            for slot in range(5):
+                global_index = self.current_page * self.per_page + slot
+                if global_index >= total:
+                    break
+                
+                if self.mode == "add":
+                    label = f"➕{slot + 1}"
+                    style = discord.ButtonStyle.success
+                    callback = self._make_add_select_callback(slot)
+                else:
+                    label = str(slot + 1)
+                    style = discord.ButtonStyle.primary
+                    callback = self._make_play_callback(slot)
+                
+                btn = discord.ui.Button(label=label, style=style, row=1)
+                btn.callback = callback
+                self.add_item(btn)
+
+    def _make_play_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_play(interaction, slot_index)
+        return callback
+
+    def _make_add_select_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_add_select(interaction, slot_index)
+        return callback
+
+    def _make_playlist_select_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_playlist_select(interaction, slot_index)
+        return callback
+
+    async def _on_add_mode(self, interaction: discord.Interaction) -> None:
+        """Switch to add mode."""
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the user who ran this search can use these buttons.",
+                ephemeral=True,
+            )
+            return
+        self.mode = "add"
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_back_to_play(self, interaction: discord.Interaction) -> None:
+        """Switch back to play mode from add mode."""
+        self.mode = "play"
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def _on_back_to_search(self, interaction: discord.Interaction) -> None:
+        """Switch back to add mode from playlist selection."""
+        self.mode = "add"
+        self.song_to_add = None
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self) -> None:
+        """Called when the view times out. Disable buttons or delete the message."""
+        try:
+            if self.is_ephemeral:
+                # Can't delete ephemeral messages, just disable the view
+                # Note: We can't edit the message here without an interaction
+                pass
+            else:
+                # Delete the search results message for non-ephemeral
+                if self.message:
+                    await self.message.delete()
+        except discord.errors.NotFound:
+            pass  # Message already deleted
+        except Exception:
+            pass  # Ignore other errors during cleanup
+
 
 
 class PlaylistPaginationView(discord.ui.View):
@@ -1761,11 +2032,15 @@ class PlayerView(discord.ui.View):
         voice = await self._get_voice()
         guild = self.ctx.guild
 
+        if guild:
+            _guild_radio_enabled[guild.id] = False
+            # Clear the queue so nothing plays after stopping
+            _guild_queue[guild.id] = []
+
         if voice and (voice.is_playing() or voice.is_paused()):
             voice.stop()
 
         if guild:
-            _guild_radio_enabled[guild.id] = False
             # Mark the shared player as idle but keep the message for reuse.
             await _send_player_controls(
                 self.ctx,
