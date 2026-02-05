@@ -1652,6 +1652,13 @@ class PlaylistPaginationView(discord.ui.View):
             ephemeral=True,
             wait=True,
         )
+        
+        # Close the original playlist view message
+        try:
+            if interaction.message:
+                await interaction.message.delete()
+        except Exception:
+            pass
 
         try:
             # Use the API to create a ZIP file
