@@ -1,0 +1,12 @@
+   services:
+     juicewrld-bot:
+       image: juicewrld-bot:latest
+       container_name: juicewrld-discord-bot
+       restart: unless-stopped
+       environment:
+         - DISCORD_TOKEN=${DISCORD_TOKEN}
+         - CLIENT_ID=${CLIENT_ID}
+         - GUILD_ID=${GUILD_ID}
+         - JUICEWRLD_API_BASE_URL=${JUICE_BASE_URL:-https://juicewrldapi.com}
+       volumes:
+         - /home/bryan/projects/juicewrld-discord-bot/playlists.json:/app/playlists.json
