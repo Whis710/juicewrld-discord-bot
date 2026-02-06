@@ -52,6 +52,9 @@ _guild_now_playing: Dict[int, Dict[str, Any]] = {}
 # Per-guild tracking of the previously played song
 _guild_previous_song: Dict[int, Dict[str, Any]] = {}
 
+# Per-guild pre-fetched next radio song (for showing "Up Next" in radio mode)
+_guild_radio_next: Dict[int, Dict[str, Any]] = {}
+
 # Per-user playlists:
 # For now this is kept in memory only; a default "Likes" playlist is used
 # by the Now Playing "Like" button.
@@ -560,6 +563,7 @@ def _set_now_playing(
             "title": existing.get("title"),
             "path": existing.get("path"),
             "metadata": existing.get("metadata", {}),
+            "duration_seconds": existing.get("duration_seconds"),
         }
     
     existing.update(
@@ -2860,6 +2864,13 @@ class PlayerView(discord.ui.View):
         self.ctx = ctx
         self.is_radio = is_radio
 
+        # Hide radio button if radio is already on
+        if is_radio:
+            for child in self.children[:]:
+                if isinstance(child, discord.ui.Button) and child.label == "📻 Radio":
+                    self.remove_item(child)
+                    break
+
     async def _get_voice(self) -> Optional[discord.VoiceClient]:
         return self.ctx.voice_client
 
@@ -2912,8 +2923,9 @@ class PlayerView(discord.ui.View):
 
         if guild:
             _guild_radio_enabled[guild.id] = False
-            # Clear the queue so nothing plays after stopping
+            # Clear the queue and pre-fetched radio song
             _guild_queue[guild.id] = []
+            _guild_radio_next.pop(guild.id, None)
 
         if voice and (voice.is_playing() or voice.is_paused()):
             voice.stop()
@@ -2930,6 +2942,74 @@ class PlayerView(discord.ui.View):
             )
 
         await _send_ephemeral_temporary(interaction, "Stopped playback.")
+
+    @discord.ui.button(label="⏮ Rewind", style=discord.ButtonStyle.secondary)
+    async def rewind_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:  # pragma: no cover - UI callback
+        """Play the previously played song again."""
+        await interaction.response.defer(ephemeral=True)
+        guild = self.ctx.guild
+
+        if not guild:
+            await _send_ephemeral_temporary(interaction, "Guild context unavailable.")
+            return
+
+        prev_song = _guild_previous_song.get(guild.id)
+        if not prev_song:
+            await _send_ephemeral_temporary(interaction, "No previous song to replay.")
+            return
+
+        path = prev_song.get("path")
+        if not path:
+            await _send_ephemeral_temporary(interaction, "Previous song has no path to replay.")
+            return
+
+        # Get stream URL for the previous song
+        api = create_api_client()
+        try:
+            stream_result = api.stream_audio_file(path)
+        finally:
+            api.close()
+
+        if stream_result.get("status") != "success":
+            await _send_ephemeral_temporary(
+                interaction, f"Could not stream previous song: {stream_result.get('error', 'unknown error')}"
+            )
+            return
+
+        stream_url = stream_result.get("stream_url")
+        if not stream_url:
+            await _send_ephemeral_temporary(interaction, "No stream URL available for previous song.")
+            return
+
+        title = prev_song.get("title", "Unknown")
+        metadata = prev_song.get("metadata", {})
+        duration_seconds = prev_song.get("duration_seconds")
+
+        # For radio mode, disable radio and play the previous song
+        if self.is_radio:
+            _guild_radio_enabled[guild.id] = False
+            _guild_radio_next.pop(guild.id, None)
+
+        # Stop current playback
+        voice = await self._get_voice()
+        if voice and (voice.is_playing() or voice.is_paused()):
+            voice.stop()
+
+        # Play the previous song using _queue_or_play_now
+        await _queue_or_play_now(
+            self.ctx,
+            stream_url=stream_url,
+            title=title,
+            path=path,
+            metadata=metadata,
+            duration_seconds=duration_seconds,
+        )
+
+        await _send_ephemeral_temporary(interaction, f"⏮ Replaying: {title}")
 
     @discord.ui.button(label="⏭ Skip", style=discord.ButtonStyle.secondary)
     async def skip_button(
@@ -3271,6 +3351,33 @@ class PlayerView(discord.ui.View):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+    @discord.ui.button(label="📻 Radio", style=discord.ButtonStyle.secondary)
+    async def radio_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:  # pragma: no cover - UI callback
+        """Start radio mode: continuously play random songs until stopped."""
+
+        await interaction.response.defer(ephemeral=True)
+
+        guild = self.ctx.guild
+        if not guild:
+            await _send_ephemeral_temporary(interaction, "Guild context unavailable.")
+            return
+
+        user = interaction.user
+        if not isinstance(user, (discord.Member,)) or not user.voice or not user.voice.channel:
+            await _send_ephemeral_temporary(interaction, "You need to be in a voice channel to use radio.")
+            return
+
+        _guild_radio_enabled[guild.id] = True
+
+        # Start playing a random song
+        await _play_random_song_in_guild(self.ctx)
+
+        await _send_ephemeral_temporary(interaction, "Radio started.")
+
 
 def _build_player_embed(
     guild_id: int,
@@ -3341,6 +3448,12 @@ def _build_player_embed(
         next_title = queue[0].get("title", "Unknown")
         queue_text = f"{len(queue)} track(s)\nUp Next: **{next_title}**"
         embed.add_field(name="Queue", value=queue_text, inline=True)
+    elif is_radio:
+        # Show pre-fetched radio next song if available
+        radio_next = _guild_radio_next.get(guild_id)
+        if radio_next:
+            next_title = radio_next.get("title", "Unknown")
+            embed.add_field(name="Up Next", value=f"**{next_title}**", inline=True)
 
     # Radio mode indicator only in the footer
     if is_radio:
@@ -3773,6 +3886,7 @@ async def slash_leave(interaction: discord.Interaction) -> None:
 
     if guild:
         _guild_radio_enabled[guild.id] = False
+        _guild_radio_next.pop(guild.id, None)
         asyncio.create_task(_delete_now_playing_message_after_delay(guild.id, 1))
 
     await voice.disconnect()
@@ -4250,6 +4364,7 @@ async def leave_voice(ctx: commands.Context):
     # after a short delay so users can see the final state briefly.
     if ctx.guild:
         _guild_radio_enabled[ctx.guild.id] = False
+        _guild_radio_next.pop(ctx.guild.id, None)
         asyncio.create_task(_delete_now_playing_message_after_delay(ctx.guild.id, 1))
 
     await voice.disconnect()
@@ -4280,6 +4395,7 @@ async def stop_radio(ctx: commands.Context):
 
     if ctx.guild:
         _guild_radio_enabled[ctx.guild.id] = False
+        _guild_radio_next.pop(ctx.guild.id, None)
 
     voice: Optional[discord.VoiceClient] = ctx.voice_client
     if voice and (voice.is_playing() or voice.is_paused()):
@@ -5237,16 +5353,89 @@ async def _play_from_browse(
     )
 
 
+async def _fetch_random_radio_song() -> Optional[Dict[str, Any]]:
+    """Fetch a random radio song and return its data (title, stream_url, metadata, duration).
+    
+    Returns None if fetching fails.
+    """
+    api = create_api_client()
+    try:
+        # 1) Get a random radio song with metadata from /radio/random/.
+        radio_data = api.get_random_radio_song()
+        chosen_title = str(radio_data.get("title") or "Unknown")
+
+        # According to docs, `path` and `id` are both the comp file path.
+        file_path = (
+            radio_data.get("path")
+            or radio_data.get("id")
+        )
+        if not file_path:
+            return None
+
+        song_info = radio_data.get("song") or {}
+        song_id = song_info.get("id")
+
+        # Prefer the canonical song name from embedded song metadata.
+        if song_info.get("name"):
+            chosen_title = str(song_info.get("name"))
+
+        # 2) Use the comp streaming helper to validate and build a stream URL.
+        stream_result = api.stream_audio_file(file_path)
+        status = stream_result.get("status")
+        if status != "success":
+            return None
+
+        stream_url = stream_result.get("stream_url")
+        if not stream_url:
+            return None
+
+        # 3) Build song metadata for artwork, duration, etc.
+        duration_seconds: Optional[int] = None
+        if song_info:
+            length = song_info.get("length") or ""
+            duration_seconds = _parse_length_to_seconds(length)
+
+            song_meta = dict(song_info)
+            song_meta["path"] = file_path
+            song_meta["image_url"] = _normalize_image_url(song_meta.get("image_url"))
+        else:
+            song_meta = {"id": song_id, "path": file_path}
+
+        return {
+            "title": chosen_title,
+            "stream_url": stream_url,
+            "metadata": song_meta,
+            "duration_seconds": duration_seconds,
+            "path": file_path,
+        }
+    except Exception:
+        return None
+    finally:
+        api.close()
+
+
+async def _prefetch_next_radio_song(guild_id: int) -> None:
+    """Pre-fetch the next random radio song for a guild and store it."""
+    song_data = await _fetch_random_radio_song()
+    if song_data:
+        _guild_radio_next[guild_id] = song_data
+
+
 async def _play_random_song_in_guild(ctx: commands.Context) -> None:
     """Pick a random song from the radio endpoint and play it.
 
     Uses `/juicewrld/radio/random/` plus the player endpoint to get a
     streaming URL and rich metadata. If radio is disabled for the guild,
     this is a no-op.
+    
+    If a pre-fetched song exists in _guild_radio_next, it will be used
+    instead of fetching a new random song.
     """
 
     if not ctx.guild or not _guild_radio_enabled.get(ctx.guild.id):
         return
+
+    guild_id = ctx.guild.id
 
     # Ensure the user is in a voice channel
     if not ctx.author.voice or not ctx.author.voice.channel:
@@ -5263,77 +5452,40 @@ async def _play_random_song_in_guild(ctx: commands.Context) -> None:
     else:
         voice = await channel.connect()
 
-    stream_url: Optional[str] = None
-    chosen_title: str = "Unknown"
-    song_meta: Dict[str, Any] = {}
-    duration_seconds: Optional[int] = None
-
-    async with ctx.typing():
-        api = create_api_client()
-        try:
-            # 1) Get a random radio song with metadata from /radio/random/.
-            radio_data = api.get_random_radio_song()
-            chosen_title = str(radio_data.get("title") or "Unknown")
-
-            # According to docs, `path` and `id` are both the comp file path.
-            file_path = (
-                radio_data.get("path")
-                or radio_data.get("id")
+    # Check for pre-fetched song first
+    prefetched = _guild_radio_next.pop(guild_id, None)
+    
+    if prefetched:
+        # Use the pre-fetched song
+        stream_url = prefetched.get("stream_url")
+        chosen_title = prefetched.get("title", "Unknown")
+        song_meta = prefetched.get("metadata", {})
+        duration_seconds = prefetched.get("duration_seconds")
+    else:
+        # Fetch a new random song
+        async with ctx.typing():
+            song_data = await _fetch_random_radio_song()
+        
+        if not song_data:
+            await _send_temporary(
+                ctx,
+                "Radio: could not fetch a random song.",
+                delay=5,
             )
-            if not file_path:
-                await _send_temporary(
-                    ctx,
-                    "Radio: random endpoint did not return a valid file path.",
-                    delay=5,
-                )
-                return
+            return
+        
+        stream_url = song_data.get("stream_url")
+        chosen_title = song_data.get("title", "Unknown")
+        song_meta = song_data.get("metadata", {})
+        duration_seconds = song_data.get("duration_seconds")
 
-            song_info = radio_data.get("song") or {}
-            song_id = song_info.get("id")
-
-            # Prefer the canonical song name from embedded song metadata.
-            if song_info.get("name"):
-                chosen_title = str(song_info.get("name"))
-
-            # 2) Use the comp streaming helper to validate and build a stream URL.
-            stream_result = api.stream_audio_file(file_path)
-            status = stream_result.get("status")
-            if status != "success":
-                await _send_temporary(
-                    ctx,
-                    "Radio: could not stream randomly selected file "
-                    f"`{chosen_title}` (path `{file_path}`) (status: {status}).",
-                    delay=5,
-                )
-                return
-
-            stream_url = stream_result.get("stream_url")
-            if not stream_url:
-                await _send_temporary(
-                    ctx,
-                    "Radio: API did not return a stream URL for the random song.",
-                    delay=5,
-                )
-                return
-
-            # 3) Build song metadata for artwork, duration, etc., from the
-            # embedded `song` object in the radio response.
-            if song_info:
-                length = song_info.get("length") or ""
-                duration_seconds = _parse_length_to_seconds(length)
-
-                # Start from the raw song dict so we keep all keys the API
-                # provides (including any future fields like bitrate/snippets).
-                song_meta = dict(song_info)
-                song_meta["path"] = file_path
-
-                # image_url in docs is relative (e.g., "/assets/youtube.webp").
-                song_meta["image_url"] = _normalize_image_url(song_meta.get("image_url"))
-            else:
-                # Minimal fallback if the radio payload is missing a song object.
-                song_meta = {"id": song_id, "path": file_path}
-        finally:
-            api.close()
+    if not stream_url:
+        await _send_temporary(
+            ctx,
+            "Radio: no stream URL available.",
+            delay=5,
+        )
+        return
 
     if not ctx.guild or not _guild_radio_enabled.get(ctx.guild.id):
         return
@@ -5387,6 +5539,9 @@ async def _play_random_song_in_guild(ctx: commands.Context) -> None:
             asyncio.run_coroutine_threadsafe(fut, bot.loop)
 
     voice.play(source, after=_after_playback)
+
+    # Pre-fetch the next radio song BEFORE showing controls so "Up Next" is populated
+    await _prefetch_next_radio_song(guild_id)
 
     radio_meta = song_meta.copy()
     radio_meta["source"] = "radio"
