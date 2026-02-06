@@ -811,12 +811,14 @@ class SingleSongResultView(discord.ui.View):
                     f"`{song_name}` is already in playlist `{playlist_name}`.",
                     ephemeral=True,
                 )
+                _schedule_interaction_deletion(interaction, 5)
                 return
             if song_path and track.get("path") == song_path:
                 await interaction.response.send_message(
                     f"`{song_name}` is already in playlist `{playlist_name}`.",
                     ephemeral=True,
                 )
+                _schedule_interaction_deletion(interaction, 5)
                 return
 
         # Build metadata
@@ -913,7 +915,7 @@ class SingleSongPlaylistCreateModal(discord.ui.Modal, title="Create New Playlist
         _save_user_playlists_to_disk()
         
         await interaction.response.send_message(
-            f"Created playlist `{name}` and added `{song_name}`.",
+            f"Added `{song_name}` to `{name}` playlist.",
             ephemeral=True,
         )
         _schedule_interaction_deletion(interaction, 5)
