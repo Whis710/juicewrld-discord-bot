@@ -1,6 +1,6 @@
    services:
      juicewrld-bot:
-       image: image: bryanr710/juicewrld-bot:latest
+       image: bryanr710/juicewrld-bot:latest
        container_name: juicewrld-discord-bot
        restart: unless-stopped
        environment:
