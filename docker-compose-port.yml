@@ -9,4 +9,5 @@
          - GUILD_ID=${GUILD_ID}
          - JUICEWRLD_API_BASE_URL=${JUICE_BASE_URL:-https://juicewrldapi.com}
        volumes:
-         - /home/bryan/projects/juicewrld-discord-bot/playlists.json:/app/playlists.json
+         - /home/bryan/projects/juicewrld-discord-bot/bot.py:/app/bot.py:ro
+         - /home/bryan/projects/juicewrld-discord-bot/playlists.json:/app/playlists.json:rw
