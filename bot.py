@@ -3914,6 +3914,35 @@ async def ping(ctx: commands.Context):
     await _send_temporary(ctx, "Pong!", delay=5)
 
 
+# Bot version info
+BOT_VERSION = "1.5.0"
+BOT_BUILD_DATE = "2026-02-22"
+
+
+@bot.command(name="ver", aliases=["version"])
+async def version_command(ctx: commands.Context):
+    """Show bot version information."""
+    
+    embed = discord.Embed(
+        title="JuiceAPI Bot Version",
+        description=f"**Version:** {BOT_VERSION}\n**Build Date:** {BOT_BUILD_DATE}",
+        colour=discord.Colour.green(),
+    )
+    embed.add_field(
+        name="Recent Updates",
+        value=(
+            "• `/jw play` with autocomplete search\n"
+            "• `/jw search` with autocomplete\n"
+            "• Fixed radio skipping issue\n"
+            "• Play/Add/Info buttons on search results"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Use !jw help for all commands")
+    
+    await _send_temporary(ctx, embed=embed, delay=15)
+
+
 # --- Slash command equivalents for core commands (ephemeral responses) ---
 
 
