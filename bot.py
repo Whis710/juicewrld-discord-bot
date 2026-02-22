@@ -3982,6 +3982,108 @@ async def slash_ping(interaction: discord.Interaction) -> None:
 #     )
 
 
+async def song_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Autocomplete callback for song search.
+    
+    Returns up to 25 song choices matching the current input.
+    """
+    if not current or len(current) < 2:
+        return []
+    
+    try:
+        api = create_api_client()
+        try:
+            results = api.get_songs(search=current, page=1, page_size=10)
+        finally:
+            api.close()
+        
+        songs = results.get("results") or []
+        choices = []
+        
+        for song in songs[:25]:  # Discord allows max 25 choices
+            song_id = getattr(song, "id", None)
+            name = getattr(song, "name", getattr(song, "title", "Unknown"))
+            length = getattr(song, "length", "")
+            
+            # Format: "Song Name - Duration" (max 100 chars for display)
+            display_name = f"{name}"
+            if length:
+                display_name += f" - {length}"
+            
+            # Truncate if too long (Discord limit is 100 chars)
+            if len(display_name) > 100:
+                display_name = display_name[:97] + "..."
+            
+            # Value is the song ID (what gets passed to the command)
+            if song_id:
+                choices.append(app_commands.Choice(name=display_name, value=str(song_id)))
+        
+        return choices
+    except Exception:
+        return []
+
+
+@jw_group.command(name="play", description="Play a Juice WRLD song in voice chat.")
+@app_commands.describe(query="Search for a song to play")
+@app_commands.autocomplete(query=song_autocomplete)
+async def slash_play(interaction: discord.Interaction, query: str) -> None:
+    """Play a song with autocomplete search."""
+    
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    
+    user = interaction.user
+    if not isinstance(user, discord.Member) or not user.voice or not user.voice.channel:
+        await interaction.followup.send(
+            "You need to be in a voice channel to play music.", ephemeral=True
+        )
+        return
+    
+    # Check if query is a song ID (from autocomplete) or a search term
+    song_id = None
+    if query.isdigit():
+        song_id = query
+    else:
+        # Search for the song
+        try:
+            api = create_api_client()
+            try:
+                results = api.get_songs(search=query, page=1, page_size=1)
+            finally:
+                api.close()
+            
+            songs = results.get("results") or []
+            if songs:
+                song_id = str(getattr(songs[0], "id", None))
+        except Exception as e:
+            await interaction.followup.send(
+                f"Error searching for song: {e}", ephemeral=True
+            )
+            return
+    
+    if not song_id:
+        await interaction.followup.send(
+            f"No song found for `{query}`.", ephemeral=True
+        )
+        return
+    
+    # Disable radio if active
+    if interaction.guild:
+        _guild_radio_enabled[interaction.guild.id] = False
+    
+    # Build a Context and play the song
+    ctx = await commands.Context.from_interaction(interaction)
+    await play_song(ctx, song_id)
+    
+    await _send_ephemeral_temporary(
+        interaction,
+        f"🎵 Playing song...",
+        delay=3,
+    )
+
+
 @jw_group.command(name="search", description="Search for Juice WRLD songs.")
 @app_commands.describe(query="Search query for song titles/content")
 async def slash_search(interaction: discord.Interaction, query: str) -> None:
