@@ -5534,8 +5534,12 @@ async def _play_from_browse(
     )
 
 
-async def _fetch_random_radio_song() -> Optional[Dict[str, Any]]:
+async def _fetch_random_radio_song(include_stream_url: bool = True) -> Optional[Dict[str, Any]]:
     """Fetch a random radio song and return its data (title, stream_url, metadata, duration).
+    
+    Args:
+        include_stream_url: If True, fetch and include stream_url. If False, only fetch metadata
+                           (useful for pre-fetching to avoid stale URLs).
     
     Returns None if fetching fails.
     """
@@ -5560,15 +5564,17 @@ async def _fetch_random_radio_song() -> Optional[Dict[str, Any]]:
         if song_info.get("name"):
             chosen_title = str(song_info.get("name"))
 
-        # 2) Use the comp streaming helper to validate and build a stream URL.
-        stream_result = api.stream_audio_file(file_path)
-        status = stream_result.get("status")
-        if status != "success":
-            return None
+        stream_url = None
+        if include_stream_url:
+            # 2) Use the comp streaming helper to validate and build a stream URL.
+            stream_result = api.stream_audio_file(file_path)
+            status = stream_result.get("status")
+            if status != "success":
+                return None
 
-        stream_url = stream_result.get("stream_url")
-        if not stream_url:
-            return None
+            stream_url = stream_result.get("stream_url")
+            if not stream_url:
+                return None
 
         # 3) Build song metadata for artwork, duration, etc.
         duration_seconds: Optional[int] = None
@@ -5595,9 +5601,26 @@ async def _fetch_random_radio_song() -> Optional[Dict[str, Any]]:
         api.close()
 
 
+async def _get_fresh_stream_url(file_path: str) -> Optional[str]:
+    """Get a fresh stream URL for a file path."""
+    api = create_api_client()
+    try:
+        stream_result = api.stream_audio_file(file_path)
+        if stream_result.get("status") == "success":
+            return stream_result.get("stream_url")
+        return None
+    except Exception:
+        return None
+    finally:
+        api.close()
+
+
 async def _prefetch_next_radio_song(guild_id: int) -> None:
-    """Pre-fetch the next random radio song for a guild and store it."""
-    song_data = await _fetch_random_radio_song()
+    """Pre-fetch the next random radio song for a guild and store it.
+    
+    Only fetches metadata (not stream URL) to avoid stale URLs when the song is played later.
+    """
+    song_data = await _fetch_random_radio_song(include_stream_url=False)
     if song_data:
         _guild_radio_next[guild_id] = song_data
 
@@ -5637,15 +5660,21 @@ async def _play_random_song_in_guild(ctx: commands.Context) -> None:
     prefetched = _guild_radio_next.pop(guild_id, None)
     
     if prefetched:
-        # Use the pre-fetched song
-        stream_url = prefetched.get("stream_url")
+        # Use the pre-fetched song metadata but get a FRESH stream URL
         chosen_title = prefetched.get("title", "Unknown")
         song_meta = prefetched.get("metadata", {})
         duration_seconds = prefetched.get("duration_seconds")
+        file_path = prefetched.get("path")
+        
+        # Get fresh stream URL to avoid stale/expired URLs
+        if file_path:
+            stream_url = await _get_fresh_stream_url(file_path)
+        else:
+            stream_url = None
     else:
-        # Fetch a new random song
+        # Fetch a new random song (with stream URL)
         async with ctx.typing():
-            song_data = await _fetch_random_radio_song()
+            song_data = await _fetch_random_radio_song(include_stream_url=True)
         
         if not song_data:
             await _send_temporary(
@@ -5666,6 +5695,10 @@ async def _play_random_song_in_guild(ctx: commands.Context) -> None:
             "Radio: no stream URL available.",
             delay=5,
         )
+        # Try again with a new song after a short delay
+        await asyncio.sleep(1)
+        if _guild_radio_enabled.get(guild_id):
+            asyncio.create_task(_play_random_song_in_guild(ctx))
         return
 
     if not ctx.guild or not _guild_radio_enabled.get(ctx.guild.id):
@@ -5708,7 +5741,13 @@ async def _play_random_song_in_guild(ctx: commands.Context) -> None:
         guild_id = ctx.guild.id
 
         if _guild_radio_enabled.get(guild_id):
-            fut = _play_random_song_in_guild(ctx)
+            # Add a small delay on error to prevent rapid looping through songs
+            async def _continue_radio():
+                if error:
+                    await asyncio.sleep(2)  # Wait before retrying on error
+                await _play_random_song_in_guild(ctx)
+            
+            fut = _continue_radio()
             asyncio.run_coroutine_threadsafe(fut, bot.loop)
             return
 
