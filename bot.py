@@ -4086,35 +4086,60 @@ async def slash_play(interaction: discord.Interaction, query: str) -> None:
 
 @jw_group.command(name="search", description="Search for Juice WRLD songs.")
 @app_commands.describe(query="Search query for song titles/content")
+@app_commands.autocomplete(query=song_autocomplete)
 async def slash_search(interaction: discord.Interaction, query: str) -> None:
     """Ephemeral, paginated search (equivalent to !jw search)."""
 
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    async with interaction.channel.typing() if isinstance(interaction.channel, discord.abc.Messageable) else asyncio.sleep(0):
+    # Build a Context to drive playback when buttons are pressed.
+    ctx = await commands.Context.from_interaction(interaction)
+
+    # Check if query is a song ID (from autocomplete selection)
+    if query.isdigit():
+        # Fetch the specific song by ID
         api = create_api_client()
         try:
-            results = api.get_songs(search=query, page=1, page_size=25)
+            song = api.get_song(int(query))
+            view = SingleSongResultView(ctx=ctx, song=song, query=query)
+            embed = view.build_embed()
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            return
+        except NotFoundError:
+            await interaction.followup.send(
+                f"No song found with ID `{query}`.", ephemeral=True
+            )
+            _schedule_interaction_deletion(interaction, 5)
+            return
         except JuiceWRLDAPIError as e:
             await interaction.followup.send(
-                f"Error while searching songs: {e}", ephemeral=True
+                f"Error fetching song: {e}", ephemeral=True
             )
             return
         finally:
             api.close()
 
+    # Regular search query
+    api = create_api_client()
+    try:
+        results = api.get_songs(search=query, page=1, page_size=25)
+    except JuiceWRLDAPIError as e:
+        await interaction.followup.send(
+            f"Error while searching songs: {e}", ephemeral=True
+        )
+        return
+    finally:
+        api.close()
+
     songs = results.get("results") or []
     if not songs:
         await interaction.followup.send(
-            f"No songs found for `" + query + "`.", ephemeral=True
+            f"No songs found for `{query}`.", ephemeral=True
         )
         _schedule_interaction_deletion(interaction, 5)
         return
 
     total = results.get("count") if isinstance(results, dict) else None
-
-    # Build a Context to drive playback when buttons are pressed.
-    ctx = await commands.Context.from_interaction(interaction)
     
     # If only one result, show interactive single song view
     if len(songs) == 1:
