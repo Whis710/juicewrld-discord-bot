@@ -1951,38 +1951,46 @@ class PlaylistPaginationView(discord.ui.View):
             voice = await channel.connect()
 
         queued = 0
+        errors = 0
         for track in tracks:
             file_path = track.get("path")
             if not file_path:
                 continue
 
-            api = create_api_client()
             try:
-                result = api.stream_audio_file(file_path)
-            finally:
-                api.close()
+                api = create_api_client()
+                try:
+                    result = api.stream_audio_file(file_path)
+                finally:
+                    api.close()
 
-            if result.get("status") != "success":
+                if result.get("status") != "success":
+                    errors += 1
+                    continue
+
+                stream_url = result.get("stream_url")
+                if not stream_url:
+                    errors += 1
+                    continue
+
+                title = track.get("name") or f"Playlist {playlist_name} item"
+                metadata = track.get("metadata") or {}
+                duration_seconds = _extract_duration_seconds(metadata, track)
+
+                await _queue_or_play_now(
+                    self.ctx,
+                    stream_url=stream_url,
+                    title=str(title),
+                    path=file_path,
+                    metadata=metadata,
+                    duration_seconds=duration_seconds,
+                    silent=True,
+                )
+                queued += 1
+            except Exception as e:
+                print(f"Error queueing track from playlist: {e}", file=sys.stderr)
+                errors += 1
                 continue
-
-            stream_url = result.get("stream_url")
-            if not stream_url:
-                continue
-
-            title = track.get("name") or f"Playlist {playlist_name} item"
-            metadata = track.get("metadata") or {}
-            duration_seconds = _extract_duration_seconds(metadata, track)
-
-            await _queue_or_play_now(
-                self.ctx,
-                stream_url=stream_url,
-                title=str(title),
-                path=file_path,
-                metadata=metadata,
-                duration_seconds=duration_seconds,
-                silent=True,
-            )
-            queued += 1
 
         if not queued:
             await interaction.followup.send(
