@@ -244,10 +244,10 @@ async def _delete_later(message: discord.Message, delay: int) -> None:
         return
 
 
-async def _send_temporary(ctx: commands.Context, content: str, delay: int = 10) -> None:
+async def _send_temporary(ctx: commands.Context, content: str = None, delay: int = 10, embed: discord.Embed = None) -> None:
     """Send a status message that auto-deletes after `delay` seconds."""
 
-    msg = await ctx.send(content)
+    msg = await ctx.send(content, embed=embed)
     asyncio.create_task(_delete_later(msg, delay))
 
 
