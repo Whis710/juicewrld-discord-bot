@@ -3914,6 +3914,49 @@ async def ping(ctx: commands.Context):
     await _send_temporary(ctx, "Pong!", delay=5)
 
 
+@bot.command(name="sync")
+@commands.has_permissions(administrator=True)
+async def sync_commands(ctx: commands.Context):
+    """Manually sync slash commands to Discord (admin only).
+    
+    This forces Discord to immediately register/update all slash commands.
+    Use this after making changes to slash commands in the code.
+    """
+    
+    msg = await ctx.send("Syncing slash commands...")
+    
+    try:
+        # Clear existing commands
+        bot.tree.clear_commands(guild=None)
+        if ctx.guild:
+            bot.tree.clear_commands(guild=ctx.guild)
+        
+        # Re-add the command group
+        bot.tree.add_command(jw_group)
+        
+        # Sync to this guild first (instant)
+        if ctx.guild:
+            await bot.tree.sync(guild=ctx.guild)
+            await msg.edit(content=f"✅ Synced slash commands to **{ctx.guild.name}**!\n\n"
+                                   f"The `/jw` commands should now be available in this server.\n"
+                                   f"Syncing globally (may take up to 1 hour)...")
+        
+        # Sync globally (takes up to 1 hour to propagate)
+        await bot.tree.sync()
+        
+        await msg.edit(content=f"✅ Successfully synced slash commands!\n\n"
+                               f"• **Guild sync**: Instant (commands available now in this server)\n"
+                               f"• **Global sync**: Started (may take up to 1 hour for other servers)\n\n"
+                               f"Try typing `/jw` to see the commands.")
+        
+        # Delete after 15 seconds
+        asyncio.create_task(_delete_later(msg, 15))
+        
+    except Exception as e:
+        await msg.edit(content=f"❌ Error syncing commands: {e}")
+        print(f"Sync error: {e}", file=sys.stderr)
+
+
 # Bot version info
 BOT_VERSION = "1.5.0"
 BOT_BUILD_DATE = "2026-02-22"
