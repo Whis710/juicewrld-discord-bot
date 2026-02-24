@@ -12,7 +12,6 @@ import asyncio
 import random
 import math
 import time
-import json
 import io
 import base64
 from typing import Optional, Dict, Any, List
@@ -38,7 +37,6 @@ import helpers as _helpers
 from commands import core as _core
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-JUICEWRLD_API_BASE_URL = os.getenv("JUICEWRLD_API_BASE_URL", "https://juicewrldapi.com")
 
 
 intents = discord.Intents.default()
@@ -151,6 +149,7 @@ def _disable_radio_if_active(ctx: commands.Context) -> bool:
     guild_id = ctx.guild.id
     if _guild_radio_enabled.get(guild_id):
         _guild_radio_enabled[guild_id] = False
+        _guild_radio_next.pop(guild_id, None)
         return True
     return False
 
@@ -176,7 +175,7 @@ async def _play_next_from_queue(ctx: commands.Context) -> None:
         # Nothing left to play; keep the player message but show it as idle.
         await _send_player_controls(
             ctx,
-            title="Nothing playing",
+            title=NOTHING_PLAYING,
             path=None,
             is_radio=False,
             metadata={},
@@ -332,7 +331,7 @@ def _set_now_playing(
     existing = _guild_now_playing.get(guild_id, {})
     
     # Save current song as previous (if there was one playing)
-    if existing.get("title") and existing.get("title") != "Nothing playing":
+    if existing.get("title") and existing.get("title") != NOTHING_PLAYING:
         _guild_previous_song[guild_id] = {
             "title": existing.get("title"),
             "path": existing.get("path"),
@@ -359,7 +358,7 @@ def _set_now_playing(
     _touch_activity(guild_id)
 
     # Record the listen for the requester's stats.
-    if title and title != "Nothing playing":
+    if title and title != NOTHING_PLAYING:
         user_id = getattr(ctx.author, "id", None)
         if user_id:
             era_name = None
@@ -372,7 +371,7 @@ def _set_now_playing(
             _record_listen(user_id, title, era_name, duration_seconds)
 
     # Update the bot's Discord Rich Presence to show the current song.
-    if title and title != "Nothing playing":
+    if title and title != NOTHING_PLAYING:
         now = time.time()
         # Build timestamps for a live elapsed/remaining timer.
         timestamps: Dict[str, Any] = {"start": now}
@@ -1055,47 +1054,6 @@ class SearchPaginationView(discord.ui.View):
         embed = discord.Embed(title="Add to Playlist", description=description)
         embed.set_footer(text="Select a playlist (1–5) or go back.")
         return embed
-
-    def _update_button_states(self) -> None:
-        """Enable/disable nav + slot buttons based on current page and results."""
-
-        if self.mode == "select_playlist":
-            total = len(self.playlist_items)
-            total_pages = max(1, math.ceil(total / self.per_page))
-            for child in self.children:
-                if not isinstance(child, discord.ui.Button):
-                    continue
-                label = child.label or ""
-                if label == "◀":
-                    child.disabled = self.playlist_page == 0
-                elif label == "▶":
-                    child.disabled = self.playlist_page >= total_pages - 1
-                elif label.isdigit() or (len(label) > 1 and label[1:].isdigit()):
-                    # Handle both "1" and "➕1" style labels
-                    digit = label[-1] if label[-1].isdigit() else label
-                    if digit.isdigit():
-                        slot_index = int(digit) - 1
-                        global_index = self.playlist_page * self.per_page + slot_index
-                        child.disabled = global_index >= total
-            return
-
-        total = len(self.songs)
-        for child in self.children:
-            if not isinstance(child, discord.ui.Button):
-                continue
-
-            label = child.label or ""
-            if label == "◀":
-                child.disabled = self.current_page == 0
-            elif label == "▶":
-                child.disabled = self.current_page >= self.total_pages - 1
-            elif label.isdigit() or (len(label) > 1 and label[1:].isdigit()):
-                # Handle both "1" and "➕1" style labels
-                digit = label[-1] if label[-1].isdigit() else label
-                if digit.isdigit():
-                    slot_index = int(digit) - 1
-                    global_index = self.current_page * self.per_page + slot_index
-                    child.disabled = global_index >= total
 
     async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
         if self.mode == "select_playlist":
@@ -2984,7 +2942,7 @@ class PlayerView(discord.ui.View):
             # Mark the shared player as idle but keep the message for reuse.
             await _send_player_controls(
                 self.ctx,
-                title="Nothing playing",
+                title=NOTHING_PLAYING,
                 path=None,
                 is_radio=False,
                 metadata={},
@@ -3338,7 +3296,7 @@ class PlayerView(discord.ui.View):
 
         # Guard: do not allow liking the idle "Nothing playing" sentinel.
         title_val = info.get("title", "")
-        if not title_val or title_val == "Nothing playing":
+        if not title_val or title_val == NOTHING_PLAYING:
             await _send_ephemeral_temporary(interaction, "Nothing is currently playing to like.")
             return
 
@@ -4218,7 +4176,7 @@ async def slash_era(interaction: discord.Interaction, era_name: str) -> None:
     try:
         results = await _core.fetch_era_songs(era_name)
     except JuiceWRLDAPIError as e:
-        await interaction.followup.send(f"Error: {e}", ephemeral=True)
+        await interaction.followup.send(f"Error fetching songs for era: {e}", ephemeral=True)
         return
 
     songs = results.get("results") or []
@@ -4753,6 +4711,10 @@ async def start_radio(ctx: commands.Context):
         await ctx.send("Radio mode can only be used in a guild.")
         return
 
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        await _send_temporary(ctx, "You need to be in a voice channel to use radio.", delay=5)
+        return
+
     _guild_radio_enabled[ctx.guild.id] = True
     await _send_temporary(ctx, "Radio mode enabled. Playing random songs until you run `!jw stop`.")
 
@@ -4781,7 +4743,7 @@ async def stop_radio(ctx: commands.Context):
     if ctx.guild:
         await _send_player_controls(
             ctx,
-            title="Nothing playing",
+            title=NOTHING_PLAYING,
             path=None,
             is_radio=False,
             metadata={},
@@ -5698,22 +5660,25 @@ async def _play_from_browse(
     duration_seconds: Optional[int] = None
     try:
         api = create_api_client()
-        search_data = api.get_songs(search=base_title, page=1, page_size=1)
-        results = search_data.get("results") or []
-        if results:
-            song_obj = results[0]
-            image_url = _normalize_image_url(song_obj.image_url)
+        try:
+            search_data = api.get_songs(search=base_title, page=1, page_size=1)
+            results = search_data.get("results") or []
+            if results:
+                song_obj = results[0]
+                image_url = _normalize_image_url(song_obj.image_url)
 
-            # Build metadata mirroring the canonical Song model.
-            song_meta = _build_song_metadata_from_song(
-                song_obj,
-                path=file_path,
-                image_url=image_url,
-            )
-            duration_seconds = _parse_length_to_seconds(song_obj.length)
-        else:
-            # No song match; at least carry the path so the UI can show it.
-            song_meta = {"path": file_path}
+                # Build metadata mirroring the canonical Song model.
+                song_meta = _build_song_metadata_from_song(
+                    song_obj,
+                    path=file_path,
+                    image_url=image_url,
+                )
+                duration_seconds = _parse_length_to_seconds(song_obj.length)
+            else:
+                # No song match; at least carry the path so the UI can show it.
+                song_meta = {"path": file_path}
+        finally:
+            api.close()
     except Exception:
         song_meta = {"path": file_path}
 
