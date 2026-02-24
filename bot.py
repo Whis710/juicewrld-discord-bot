@@ -778,19 +778,19 @@ def _set_now_playing(
         if len(activity_name) > 128:
             activity_name = activity_name[:125] + "..."
 
-        # Album art via external URL (works for OAuth2 apps).
-        assets: Dict[str, str] = {}
-        image_url = meta.get("image_url")
-        if image_url and isinstance(image_url, str) and image_url.startswith("http"):
-            assets["large_image"] = image_url
-            assets["large_text"] = title
+        # Album art: use Rich Presence Art Asset uploaded in Developer Portal.
+        # Upload an image named "juicewrld-cover" in your app's Rich Presence assets.
+        assets: Dict[str, str] = {
+            "large_image": "juicewrld-cover",
+            "large_text": title,
+        }
 
-        # Small image: radio icon vs play icon.
+        # Small image: radio vs play icon (upload as "radio-icon" / "play-icon").
         if is_radio:
-            assets["small_image"] = "https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/72x72/1f4fb.png"
+            assets["small_image"] = "radio-icon"
             assets["small_text"] = "Radio Mode"
         else:
-            assets["small_image"] = "https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/72x72/25b6.png"
+            assets["small_image"] = "play-icon"
             assets["small_text"] = "Now Playing"
 
         # Party size: show how many people are in the voice channel.
@@ -807,10 +807,11 @@ def _set_now_playing(
         activity = discord.Activity(
             type=discord.ActivityType.playing,
             name=activity_name,
+            application_id=bot.application_id,
             details=title,
             state=state_text,
             timestamps=timestamps,
-            assets=assets if assets else None,
+            assets=assets,
             party=party,
             buttons=buttons,
         )
