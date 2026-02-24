@@ -364,7 +364,17 @@ class JuiceWRLDAPI:
             ...     print(f"Era: {era.name} - {era.time_frame}")
         """
         data = self._get('/juicewrld/eras/')
-        return [Era(**era) for era in data.get('results', [])]
+        eras = []
+        for era_data in data.get('results', []):
+            if isinstance(era_data, dict):
+                eras.append(Era(
+                    id=era_data.get('id', 0),
+                    name=era_data.get('name', 'Unknown'),
+                    description=era_data.get('description', ''),
+                    time_frame=era_data.get('time_frame', ''),
+                    play_count=era_data.get('play_count', 0),
+                ))
+        return eras
 
     def get_era(self, era_id: int) -> Era:
         """
@@ -386,7 +396,13 @@ class JuiceWRLDAPI:
             >>> print(f"Time Frame: {era.time_frame}")
         """
         data = self._get(f'/juicewrld/eras/{era_id}/')
-        return Era(**data)
+        return Era(
+            id=data.get('id', 0),
+            name=data.get('name', 'Unknown'),
+            description=data.get('description', ''),
+            time_frame=data.get('time_frame', ''),
+            play_count=data.get('play_count', 0),
+        )
 
     def get_stats(self) -> Stats:
         """
