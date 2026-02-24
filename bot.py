@@ -746,9 +746,51 @@ def _set_now_playing(
                 era_name = str(era_val)
             _record_listen(user_id, title, era_name, duration_seconds)
 
-    # Update the bot's Discord activity to show the current song.
+    # Update the bot's Discord Rich Presence to show the current song.
     if title and title != "Nothing playing":
-        activity = discord.Activity(type=discord.ActivityType.listening, name=title)
+        now = time.time()
+        # Build timestamps for a live elapsed/remaining timer.
+        timestamps: Dict[str, Any] = {"start": now}
+        if duration_seconds and duration_seconds > 0:
+            timestamps["end"] = now + duration_seconds
+
+        # Compose the "state" line: era + category.
+        meta = metadata or {}
+        state_parts: List[str] = []
+        era_val = meta.get("era")
+        if isinstance(era_val, dict) and era_val.get("name"):
+            state_parts.append(era_val["name"])
+        elif era_val:
+            state_parts.append(str(era_val))
+        cat = meta.get("category")
+        if cat:
+            state_parts.append(str(cat))
+        state_text = " · ".join(state_parts) if state_parts else None
+
+        # Duration text for the name field.
+        if duration_seconds and duration_seconds > 0:
+            dm, ds = divmod(duration_seconds, 60)
+            activity_name = f"{title} [{dm}:{ds:02d}]"
+        else:
+            activity_name = title
+        if len(activity_name) > 128:
+            activity_name = activity_name[:125] + "..."
+
+        # Album art via external URL (works for OAuth2 apps).
+        assets: Dict[str, str] = {}
+        image_url = meta.get("image_url")
+        if image_url and isinstance(image_url, str) and image_url.startswith("http"):
+            assets["large_image"] = image_url
+            assets["large_text"] = title
+
+        activity = discord.Activity(
+            type=discord.ActivityType.listening,
+            name=activity_name,
+            details=title,
+            state=state_text,
+            timestamps=timestamps,
+            assets=assets if assets else None,
+        )
     else:
         activity = discord.Activity(type=discord.ActivityType.listening, name="nothing")
     asyncio.create_task(bot.change_presence(activity=activity))
