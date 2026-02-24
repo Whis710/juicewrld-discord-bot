@@ -50,347 +50,52 @@ bot = commands.Bot(command_prefix="!jw ", intents=intents, help_command=None)
 # Slash command group for /jw ... equivalents of core commands.
 jw_group = app_commands.Group(name="jw", description="Juice WRLD bot commands")
 
-# Simple per-guild flag to track whether radio mode is enabled
-_guild_radio_enabled: dict[int, bool] = {}
-
-# Per-guild playback queue for on-demand tracks (search/comp/play/etc.).
-# Each entry is a dict with at least: title, path, stream_url.
-_guild_queue: Dict[int, List[Dict[str, Any]]] = {}
-
-# Per-guild tracking of what is currently playing so the UI controls can
-# show "now playing" information and operate on the right voice client.
-_guild_now_playing: Dict[int, Dict[str, Any]] = {}
-
-# Per-guild tracking of the previously played song
-_guild_previous_song: Dict[int, Dict[str, Any]] = {}
-
-# Per-guild pre-fetched next radio song (for showing "Up Next" in radio mode)
-_guild_radio_next: Dict[int, Dict[str, Any]] = {}
-
-# Per-guild timestamp of last voice activity (play, queue, radio, etc.)
-# Used by the idle auto-leave task.
-_guild_last_activity: Dict[int, float] = {}
-
-# How long (seconds) of no playback before auto-leaving voice.
-AUTO_LEAVE_IDLE_SECONDS = 30 * 60  # 30 minutes
-
-# Per-user playlists:
-# For now this is kept in memory only; a default "Likes" playlist is used
-# by the Now Playing "Like" button.
-_user_playlists: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
-
-
-def create_api_client() -> JuiceWRLDAPI:
-    """Create a new JuiceWRLDAPI client instance."""
-
-    return JuiceWRLDAPI(base_url=JUICEWRLD_API_BASE_URL)
-
-
-def _get_or_create_user_playlists(user_id: int) -> Dict[str, List[Dict[str, Any]]]:
-    """Return the playlist mapping for a user, creating it if needed."""
-
-    playlists = _user_playlists.get(user_id)
-    if playlists is None:
-        playlists = {}
-        _user_playlists[user_id] = playlists
-    return playlists
-
-
-PLAYLISTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "playlists.json")
-STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "listening_stats.json")
-SOTD_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sotd_config.json")
-
-# Song of the Day config: { guild_id_str: channel_id }
-_sotd_config: Dict[str, int] = {}
-
-# Per-user listening stats:
-# { user_id: { "total_plays": int, "total_seconds": int,
-#              "songs": { song_name: play_count },
-#              "eras": { era_name: play_count } } }
-_user_listening_stats: Dict[int, Dict[str, Any]] = {}
-
-
-def _serialize_user_playlists_for_json() -> Dict[str, Any]:
-    data: Dict[str, Any] = {}
-    for user_id, playlists in _user_playlists.items():
-        data[str(user_id)] = playlists
-    return data
-
-
-def _load_user_playlists_from_disk() -> None:
-    """Load user playlists from disk into memory (best-effort)."""
-
-    global _user_playlists
-    try:
-        with open(PLAYLISTS_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except FileNotFoundError:
-        return
-    except Exception:
-        return
-
-    if not isinstance(raw, dict):
-        return
-
-    loaded: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
-    for user_id_str, playlists in raw.items():
-        try:
-            user_id = int(user_id_str)
-        except (TypeError, ValueError):
-            continue
-        if isinstance(playlists, dict):
-            loaded[user_id] = playlists
-
-    if loaded:
-        _user_playlists = loaded
-
-
-def _save_user_playlists_to_disk() -> None:
-    """Persist user playlists to disk (best-effort)."""
-
-    try:
-        with open(PLAYLISTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(_serialize_user_playlists_for_json(), f, ensure_ascii=False)
-    except Exception:
-        return
-
-
-def _load_listening_stats_from_disk() -> None:
-    """Load listening stats from disk into memory (best-effort)."""
-    global _user_listening_stats
-    try:
-        with open(STATS_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (FileNotFoundError, Exception):
-        return
-    if not isinstance(raw, dict):
-        return
-    loaded: Dict[int, Dict[str, Any]] = {}
-    for uid_str, data in raw.items():
-        try:
-            loaded[int(uid_str)] = data
-        except (TypeError, ValueError):
-            continue
-    if loaded:
-        _user_listening_stats = loaded
-
-
-def _save_listening_stats_to_disk() -> None:
-    """Persist listening stats to disk (best-effort)."""
-    try:
-        serialized = {str(uid): data for uid, data in _user_listening_stats.items()}
-        with open(STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(serialized, f, ensure_ascii=False)
-    except Exception:
-        return
-
-
-def _record_listen(user_id: int, title: str, era_name: Optional[str], duration_seconds: Optional[int]) -> None:
-    """Record a song play for a user's listening stats."""
-    stats = _user_listening_stats.setdefault(user_id, {
-        "total_plays": 0,
-        "total_seconds": 0,
-        "songs": {},
-        "eras": {},
-    })
-    stats["total_plays"] = stats.get("total_plays", 0) + 1
-    if duration_seconds and duration_seconds > 0:
-        stats["total_seconds"] = stats.get("total_seconds", 0) + duration_seconds
-
-    songs = stats.setdefault("songs", {})
-    songs[title] = songs.get(title, 0) + 1
-
-    if era_name and era_name.strip():
-        eras = stats.setdefault("eras", {})
-        eras[era_name] = eras.get(era_name, 0) + 1
-
-    _save_listening_stats_to_disk()
-
-
-def _load_sotd_config() -> None:
-    """Load SOTD channel config from disk."""
-    global _sotd_config
-    try:
-        with open(SOTD_CONFIG_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (FileNotFoundError, Exception):
-        return
-    if isinstance(raw, dict):
-        _sotd_config = raw
-
-
-def _save_sotd_config() -> None:
-    """Persist SOTD channel config to disk."""
-    try:
-        with open(SOTD_CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(_sotd_config, f, ensure_ascii=False)
-    except Exception:
-        return
-
-
-_load_user_playlists_from_disk()
-_load_listening_stats_from_disk()
-_load_sotd_config()
-
-
-def _parse_length_to_seconds(length: str) -> Optional[int]:
-    """Convert a length string like "3:45" or "01:02:03" to seconds."""
-
-    if not length:
-        return None
-    parts = length.strip().split(":")
-    try:
-        if len(parts) == 2:
-            minutes, seconds = map(int, parts)
-            return minutes * 60 + seconds
-        if len(parts) == 3:
-            hours, minutes, seconds = map(int, parts)
-            return hours * 3600 + minutes * 60 + seconds
-    except ValueError:
-        return None
-    return None
-
-
-def _build_song_metadata_from_song(
-    song_obj: Any,
-    *,
-    path: Optional[str] = None,
-    image_url: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Build a metadata dict that mirrors the canonical Song model JSON.
-
-    This attempts to map all known Song/ERA fields plus a few optional
-    extras (bitrate, lyrics, snippets) if they exist on the object.
-    """
-
-    # Era as nested object
-    era_obj = getattr(song_obj, "era", None)
-    era_dict: Optional[Dict[str, Any]] = None
-    if era_obj is not None:
-        era_dict = {
-            "id": getattr(era_obj, "id", None),
-            "name": getattr(era_obj, "name", None),
-            "description": getattr(era_obj, "description", None),
-            "time_frame": getattr(era_obj, "time_frame", None),
-            # Some APIs include play_count; default to 0 if missing.
-            "play_count": getattr(era_obj, "play_count", 0),
-        }
-
-    # Prefer an explicitly-normalized image_url, fall back to the raw field
-    final_image_url = image_url if image_url is not None else getattr(song_obj, "image_url", None)
-
-    meta: Dict[str, Any] = {
-        # Core identity
-        "id": getattr(song_obj, "id", None),
-        "public_id": getattr(song_obj, "public_id", None),
-        "name": getattr(song_obj, "name", None),
-        "original_key": getattr(song_obj, "original_key", None),
-        "category": getattr(song_obj, "category", None),
-        # File path within the comp structure
-        "path": path,
-        # Era object
-        "era": era_dict,
-        # Titles / tracking
-        "track_titles": getattr(song_obj, "track_titles", None),
-        "session_titles": getattr(song_obj, "session_titles", None),
-        "session_tracking": getattr(song_obj, "session_tracking", None),
-        # Credits
-        "credited_artists": getattr(song_obj, "credited_artists", None),
-        "producers": getattr(song_obj, "producers", None),
-        "engineers": getattr(song_obj, "engineers", None),
-        # Recording details
-        "recording_locations": getattr(song_obj, "recording_locations", None),
-        "record_dates": getattr(song_obj, "record_dates", None),
-        "dates": getattr(song_obj, "dates", None),
-        # Audio / technical
-        "length": getattr(song_obj, "length", None),
-        "bitrate": getattr(song_obj, "bitrate", None),
-        "instrumentals": getattr(song_obj, "instrumentals", None),
-        "instrumental_names": getattr(song_obj, "instrumental_names", None),
-        # Files
-        "file_names": getattr(song_obj, "file_names", None),
-        # Release / leak
-        "preview_date": getattr(song_obj, "preview_date", None),
-        "release_date": getattr(song_obj, "release_date", None),
-        "date_leaked": getattr(song_obj, "date_leaked", None),
-        "leak_type": getattr(song_obj, "leak_type", None),
-        # Text / extra info
-        "additional_information": getattr(song_obj, "additional_information", None),
-        "notes": getattr(song_obj, "notes", None),
-        "lyrics": getattr(song_obj, "lyrics", None),
-        # Media / visuals
-        "image_url": final_image_url,
-        # Misc lists
-        "snippets": getattr(song_obj, "snippets", None),
-    }
-
-    return meta
-
-
-def _format_progress_bar(current: int, total: Optional[int], width: int = 10) -> str:
-    """Return a simple text progress bar and time display."""
-
-    if not total or total <= 0 or current <= 0:
-        return f"00:00 / {time.strftime('%M:%S', time.gmtime(total)) if total else '?:??'}"
-
-    current = max(0, min(current, total))
-    filled = int(width * (current / total))
-    bar = "▮" * filled + "▯" * (width - filled)
-    return f"{bar} {time.strftime('%M:%S', time.gmtime(current))} / {time.strftime('%M:%S', time.gmtime(total))}"
-
-
-async def _delete_later(message: discord.Message, delay: int) -> None:
-    """Delete a message after a delay, ignoring failures."""
-
-    try:
-        await asyncio.sleep(delay)
-        await message.delete()
-    except Exception:
-        return
-
-
-async def _send_temporary(ctx: commands.Context, content: str = None, delay: int = 10, embed: discord.Embed = None) -> None:
-    """Send a status message that auto-deletes after `delay` seconds."""
-
-    msg = await ctx.send(content, embed=embed)
-    asyncio.create_task(_delete_later(msg, delay))
-
-
-async def _send_ephemeral_temporary(
-    interaction: discord.Interaction, content: str, delay: int = 5
-) -> None:
-    """Send an ephemeral followup message that auto-deletes after `delay` seconds."""
-
-    msg = await interaction.followup.send(content, ephemeral=True, wait=True)
-    asyncio.create_task(_delete_later(msg, delay))
-
-
-def _schedule_interaction_deletion(interaction: discord.Interaction, delay: int) -> None:
-    """Schedule an interaction's original response to be deleted after a delay."""
-    async def _delete_after_delay() -> None:
-        await asyncio.sleep(delay)
-        try:
-            await interaction.delete_original_response()
-        except Exception:
-            pass
-    asyncio.create_task(_delete_after_delay())
-
-
-def _extract_duration_seconds(
-    metadata: Dict[str, Any], track: Optional[Dict[str, Any]] = None
-) -> Optional[int]:
-    """Extract duration in seconds from metadata or track dict."""
-    length_str = metadata.get("length") or (track.get("length") if track else None)
-    if length_str:
-        return _parse_length_to_seconds(length_str)
-    return None
-
-
-def _normalize_image_url(image_url: Optional[str]) -> Optional[str]:
-    """Convert relative image URLs to absolute URLs."""
-    if image_url and isinstance(image_url, str) and image_url.startswith("/"):
-        return f"{JUICEWRLD_API_BASE_URL}{image_url}"
-    return image_url
+# ── State aliases ─────────────────────────────────────────────────────
+# All mutable state lives in state.py.  The names below are aliases so
+# existing bot.py code keeps working without a find-and-replace of every
+# reference.  Because dicts are mutable references, mutations through
+# either name affect the same underlying object.
+_guild_radio_enabled = _state.guild_radio_enabled
+_guild_queue = _state.guild_queue
+_guild_now_playing = _state.guild_now_playing
+_guild_previous_song = _state.guild_previous_song
+_guild_radio_next = _state.guild_radio_next
+_guild_last_activity = _state.guild_last_activity
+_user_playlists = _state.user_playlists
+_user_listening_stats = _state.user_listening_stats
+_sotd_config = _state.sotd_config
+
+from constants import AUTO_LEAVE_IDLE_SECONDS
+
+
+# Re-export helpers under the old local names so the rest of bot.py is
+# unchanged.  New code should import from helpers / state directly.
+create_api_client = _helpers.create_api_client
+
+
+_get_or_create_user_playlists = _state.get_or_create_user_playlists
+_save_user_playlists_to_disk = _state.save_user_playlists_to_disk
+_save_listening_stats_to_disk = _state.save_listening_stats_to_disk
+_save_sotd_config = _state.save_sotd_config
+_record_listen = _state.record_listen
+
+# state.py already loads persisted data on import, so no load calls needed here.
+
+
+# ── Helper aliases ────────────────────────────────────────────────────
+_parse_length_to_seconds = _helpers.parse_length_to_seconds
+_build_song_metadata_from_song = _helpers.build_song_metadata_from_song
+_format_progress_bar = _helpers.format_progress_bar
+_delete_later = _helpers.delete_later
+_send_temporary = _helpers.send_temporary
+_send_ephemeral_temporary = _helpers.send_ephemeral_temporary
+_schedule_interaction_deletion = _helpers.schedule_interaction_deletion
+_extract_duration_seconds = _helpers.extract_duration_seconds
+_normalize_image_url = _helpers.normalize_image_url
+_build_playlists_embed_for_user = _helpers.build_playlists_embed_for_user
+_build_stats_embed = _helpers.build_stats_embed
+_ensure_queue = _state.ensure_queue
+_touch_activity = _state.touch_activity
 
 
 async def _delete_now_playing_message(guild_id: int) -> None:
@@ -432,16 +137,6 @@ async def _delete_now_playing_message_after_delay(guild_id: int, delay: int) -> 
     await asyncio.sleep(delay)
     await _delete_now_playing_message(guild_id)
 
-
-
-def _ensure_queue(guild_id: int) -> List[Dict[str, Any]]:
-    """Get or create the playback queue for a guild."""
-
-    queue = _guild_queue.get(guild_id)
-    if queue is None:
-        queue = []
-        _guild_queue[guild_id] = queue
-    return queue
 
 
 def _disable_radio_if_active(ctx: commands.Context) -> bool:
@@ -613,79 +308,6 @@ async def _queue_or_play_now(
         metadata=metadata,
         duration_seconds=duration_seconds,
     )
-
-
-def _build_playlists_embed_for_user(user: discord.abc.User, playlists: Dict[str, List[Dict[str, Any]]]) -> discord.Embed:
-    """Construct an embed summarizing a user's playlists."""
-
-    embed = discord.Embed(title=f"{getattr(user, 'display_name', str(user))}'s Playlists")
-    for name, tracks in playlists.items():
-        count = len(tracks)
-        if not count:
-            value = "(empty)"
-        else:
-            preview_titles = [str(t.get("name") or t.get("id") or "?") for t in tracks[:3]]
-            extra = "" if count <= 3 else f" +{count - 3} more"
-            value = ", ".join(preview_titles) + extra
-
-        embed.add_field(name=f"{name} ({count})", value=value[:1024], inline=False)
-    return embed
-
-
-def _build_stats_embed(user: discord.abc.User) -> discord.Embed:
-    """Construct an embed showing a user's personal listening stats."""
-
-    stats = _user_listening_stats.get(getattr(user, "id", 0))
-    display_name = getattr(user, "display_name", str(user))
-
-    if not stats or stats.get("total_plays", 0) == 0:
-        embed = discord.Embed(
-            title=f"{display_name}'s Listening Stats",
-            description="No listening history yet. Play some songs to start tracking!",
-            colour=discord.Colour.greyple(),
-        )
-        return embed
-
-    total_plays = stats.get("total_plays", 0)
-    total_seconds = stats.get("total_seconds", 0)
-    songs = stats.get("songs", {})
-    eras = stats.get("eras", {})
-
-    # Format total listen time
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        time_str = f"{hours}h {minutes}m"
-    elif minutes:
-        time_str = f"{minutes}m {secs}s"
-    else:
-        time_str = f"{secs}s"
-
-    embed = discord.Embed(
-        title=f"{display_name}'s Listening Stats",
-        colour=discord.Colour.purple(),
-    )
-    embed.add_field(name="Total Plays", value=str(total_plays), inline=True)
-    embed.add_field(name="Listen Time", value=time_str, inline=True)
-
-    # Top 5 songs
-    if songs:
-        top_songs = sorted(songs.items(), key=lambda x: x[1], reverse=True)[:5]
-        lines = [f"`{i}.` **{name}** — {count} play{'s' if count != 1 else ''}" for i, (name, count) in enumerate(top_songs, 1)]
-        embed.add_field(name="Top Songs", value="\n".join(lines), inline=False)
-
-    # Top 3 eras
-    if eras:
-        top_eras = sorted(eras.items(), key=lambda x: x[1], reverse=True)[:3]
-        lines = [f"`{i}.` **{name}** — {count} play{'s' if count != 1 else ''}" for i, (name, count) in enumerate(top_eras, 1)]
-        embed.add_field(name="Top Eras", value="\n".join(lines), inline=False)
-
-    return embed
-
-
-def _touch_activity(guild_id: int) -> None:
-    """Update the last-activity timestamp for a guild."""
-    _guild_last_activity[guild_id] = time.time()
 
 
 def _set_now_playing(
@@ -4475,9 +4097,9 @@ async def sync_commands(ctx: commands.Context):
         print(f"Sync error: {e}", file=sys.stderr)
 
 
-# Bot version info
-BOT_VERSION = "2.2.0"
-BOT_BUILD_DATE = "2026-02-24"
+# Bot version info (canonical values live in constants.py)
+BOT_VERSION = _CONST_BOT_VERSION
+BOT_BUILD_DATE = _CONST_BOT_BUILD_DATE
 
 
 @bot.command(name="ver", aliases=["version"])
@@ -4933,14 +4555,11 @@ async def list_eras(ctx: commands.Context):
     """List all Juice WRLD musical eras."""
 
     async with ctx.typing():
-        api = create_api_client()
         try:
-            eras = api.get_eras()
+            eras = await _core.fetch_eras()
         except JuiceWRLDAPIError as e:
             await _send_temporary(ctx, f"Error fetching eras: {e}")
             return
-        finally:
-            api.close()
 
     if not eras:
         await _send_temporary(ctx, "No eras found.")
@@ -4965,14 +4584,11 @@ async def browse_era(ctx: commands.Context, *, era_name: str):
     """Browse songs from a specific era."""
 
     async with ctx.typing():
-        api = create_api_client()
         try:
-            results = api.get_songs(era=era_name, page=1, page_size=25)
+            results = await _core.fetch_era_songs(era_name)
         except JuiceWRLDAPIError as e:
             await _send_temporary(ctx, f"Error fetching songs for era: {e}")
             return
-        finally:
-            api.close()
 
     songs = results.get("results") or []
     if not songs:
@@ -4993,61 +4609,16 @@ async def similar_songs(ctx: commands.Context):
         await _send_temporary(ctx, "This command can only be used in a server.")
         return
 
-    info = _guild_now_playing.get(ctx.guild.id)
-    title = info.get("title") if info else None
-    if not info or not title or title == "Nothing playing":
-        await _send_temporary(ctx, "Nothing is currently playing. Play a song first!")
-        return
-
-    meta = info.get("metadata") or {}
-    era_val = meta.get("era")
-    era_name = None
-    if isinstance(era_val, dict):
-        era_name = era_val.get("name")
-    elif era_val:
-        era_name = str(era_val)
-
-    producers_str = meta.get("producers") or ""
-    category = meta.get("category") or ""
-
-    # Strategy: search by era first, fall back to category
-    candidates: List[Any] = []
     async with ctx.typing():
-        api = create_api_client()
         try:
-            if era_name:
-                res = api.get_songs(era=era_name, page=1, page_size=25)
-                candidates = res.get("results") or []
-            if len(candidates) < 5 and category:
-                res2 = api.get_songs(category=category, page=1, page_size=25)
-                existing_ids = {getattr(s, "id", None) for s in candidates}
-                for s in (res2.get("results") or []):
-                    if getattr(s, "id", None) not in existing_ids:
-                        candidates.append(s)
+            title, top = await _core.find_similar_songs(ctx.guild.id)
         except JuiceWRLDAPIError as e:
             await _send_temporary(ctx, f"Error finding similar songs: {e}")
             return
-        finally:
-            api.close()
 
-    # Remove the currently playing song from results
-    candidates = [s for s in candidates if getattr(s, "name", None) != title]
-
-    # Score: same producers > same era > same category
-    def _score(song: Any) -> int:
-        sc = 0
-        s_era = getattr(getattr(song, "era", None), "name", "")
-        if era_name and s_era == era_name:
-            sc += 2
-        s_prod = getattr(song, "producers", "") or ""
-        if producers_str and s_prod and any(p.strip() in s_prod for p in producers_str.split(",") if p.strip()):
-            sc += 3
-        if category and getattr(song, "category", "") == category:
-            sc += 1
-        return sc
-
-    candidates.sort(key=_score, reverse=True)
-    top = candidates[:10]
+    if not title:
+        await _send_temporary(ctx, "Nothing is currently playing. Play a song first!")
+        return
 
     if not top:
         await _send_temporary(ctx, f"No similar songs found for **{title}**.")
@@ -5071,15 +4642,11 @@ async def search_songs(ctx: commands.Context, *, query: str):
     """Search for songs by text query and show paginated interactive results."""
 
     async with ctx.typing():
-        api = create_api_client()
         try:
-            # Fetch up to 25 results to keep the UI manageable.
-            results = api.get_songs(search=query, page=1, page_size=25)
+            results = await _core.search_songs_api(query)
         except JuiceWRLDAPIError as e:
             await _send_temporary(ctx, f"Error while searching songs: {e}")
             return
-        finally:
-            api.close()
 
     songs = results.get("results") or []
     if not songs:
@@ -5168,18 +4735,13 @@ async def leave_voice(ctx: commands.Context):
     """Disconnect from the current voice channel."""
 
     voice: Optional[discord.VoiceClient] = ctx.voice_client
-    if not voice or not voice.is_connected():
+    disconnected = await _core.leave_voice_channel(
+        ctx.guild, voice, delete_np_callback=_delete_now_playing_message_after_delay,
+    )
+    if not disconnected:
         await ctx.send("I'm not connected to a voice channel.")
         return
 
-    # Turn off radio for this guild when leaving and delete the player message
-    # after a short delay so users can see the final state briefly.
-    if ctx.guild:
-        _guild_radio_enabled[ctx.guild.id] = False
-        _guild_radio_next.pop(ctx.guild.id, None)
-        asyncio.create_task(_delete_now_playing_message_after_delay(ctx.guild.id, 1))
-
-    await voice.disconnect()
     await _send_temporary(ctx, "Disconnected from voice channel.")
 
 
