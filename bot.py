@@ -4074,7 +4074,7 @@ async def sync_commands(ctx: commands.Context):
 
 
 # Bot version info
-BOT_VERSION = "1.7.0"
+BOT_VERSION = "1.7.1"
 BOT_BUILD_DATE = "2026-02-24"
 
 
@@ -4090,6 +4090,7 @@ async def version_command(ctx: commands.Context):
     embed.add_field(
         name="Recent Updates",
         value=(
+            "• `/jw play` autocomplete now only shows playable songs\n"
             "• Auto-leave after 30 min of inactivity\n"
             "• Auto-leave when everyone leaves the voice channel\n"
             "• Radio now lets current song finish before starting\n"
@@ -4180,6 +4181,8 @@ async def song_autocomplete(
     """Autocomplete callback for song search.
     
     Returns up to 25 song choices matching the current input.
+    Only includes songs that have a duration (length), which is the
+    strongest indicator that an audio file exists for the song.
     """
     if not current or len(current) < 2:
         return []
@@ -4187,30 +4190,39 @@ async def song_autocomplete(
     try:
         api = create_api_client()
         try:
-            results = api.get_songs(search=current, page=1, page_size=10)
+            # Fetch more results so we still have enough after filtering.
+            results = api.get_songs(search=current, page=1, page_size=25)
         finally:
             api.close()
         
         songs = results.get("results") or []
         choices = []
         
-        for song in songs[:25]:  # Discord allows max 25 choices
+        for song in songs:
+            if len(choices) >= 25:  # Discord allows max 25 choices
+                break
+
             song_id = getattr(song, "id", None)
+            if not song_id:
+                continue
+
+            length = (getattr(song, "length", "") or "").strip()
+
+            # Skip songs with no duration — they almost never have
+            # playable audio files regardless of category.
+            if not length:
+                continue
+
             name = getattr(song, "name", getattr(song, "title", "Unknown"))
-            length = getattr(song, "length", "")
             
             # Format: "Song Name - Duration" (max 100 chars for display)
-            display_name = f"{name}"
-            if length:
-                display_name += f" - {length}"
+            display_name = f"{name} - {length}"
             
             # Truncate if too long (Discord limit is 100 chars)
             if len(display_name) > 100:
                 display_name = display_name[:97] + "..."
             
-            # Value is the song ID (what gets passed to the command)
-            if song_id:
-                choices.append(app_commands.Choice(name=display_name, value=str(song_id)))
+            choices.append(app_commands.Choice(name=display_name, value=str(song_id)))
         
         return choices
     except Exception:
