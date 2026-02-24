@@ -3562,10 +3562,18 @@ class PlayerView(discord.ui.View):
 
         _guild_radio_enabled[guild.id] = True
 
-        # Start playing a random song
-        await _play_random_song_in_guild(self.ctx)
-
-        await _send_ephemeral_temporary(interaction, "Radio started.")
+        # If something is already playing, let it finish naturally.
+        # The after-callback will detect radio is enabled and start playing
+        # random songs once the current track ends.
+        voice: Optional[discord.VoiceClient] = self.ctx.voice_client
+        if voice and (voice.is_playing() or voice.is_paused()):
+            # Pre-fetch so "Up Next" is ready when the current song ends
+            await _prefetch_next_radio_song(guild.id)
+            await _send_ephemeral_temporary(interaction, "Radio enabled. Current song will finish, then radio starts.")
+        else:
+            # Nothing playing; start radio immediately
+            await _play_random_song_in_guild(self.ctx)
+            await _send_ephemeral_temporary(interaction, "Radio started.")
 
 
 def _build_player_embed(
@@ -4306,8 +4314,17 @@ async def slash_radio(interaction: discord.Interaction) -> None:
 
     # Reuse existing radio logic via a Context.
     ctx = await commands.Context.from_interaction(interaction)
-    await _send_temporary(ctx, "Radio mode enabled. Playing random songs until you run `!jw stop`.")
-    await _play_random_song_in_guild(ctx)
+
+    # If something is already playing, let it finish naturally.
+    # The after-callback will detect radio is enabled and start playing
+    # random songs once the current track ends.
+    voice: Optional[discord.VoiceClient] = guild.voice_client if guild else None
+    if voice and (voice.is_playing() or voice.is_paused()):
+        await _prefetch_next_radio_song(guild.id)
+        await _send_temporary(ctx, "Radio enabled. Current song will finish, then radio starts.", delay=5)
+    else:
+        await _send_temporary(ctx, "Radio mode enabled. Playing random songs until you run `!jw stop`.")
+        await _play_random_song_in_guild(ctx)
 
 
 @jw_group.command(name="stop", description="Stop playback and disable radio mode.")
@@ -5915,8 +5932,11 @@ async def _play_random_song_in_guild(ctx: commands.Context) -> None:
         await _send_temporary(ctx, "Internal error: voice client not available.", delay=5)
         return
 
-    if voice.is_playing():
-        voice.stop()
+    if voice.is_playing() or voice.is_paused():
+        # Something is already playing; don't interrupt it.
+        # The after-callback will detect that radio is enabled and
+        # call _play_random_song_in_guild once the current track ends.
+        return
 
     ffmpeg_before = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
     ffmpeg_options = "-vn"
