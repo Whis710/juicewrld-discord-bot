@@ -783,6 +783,25 @@ def _set_now_playing(
             assets["large_image"] = image_url
             assets["large_text"] = title
 
+        # Small image: radio icon vs play icon.
+        if is_radio:
+            assets["small_image"] = "https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/72x72/1f4fb.png"
+            assets["small_text"] = "Radio Mode"
+        else:
+            assets["small_image"] = "https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/72x72/25b6.png"
+            assets["small_text"] = "Now Playing"
+
+        # Party size: show how many people are in the voice channel.
+        party: Optional[Dict[str, Any]] = None
+        voice_client: Optional[discord.VoiceClient] = ctx.voice_client
+        if voice_client and voice_client.channel:
+            humans = [m for m in voice_client.channel.members if not m.bot]
+            if humans:
+                party = {"size": [len(humans), voice_client.channel.user_limit or len(humans)]}
+
+        # Rich Presence buttons (up to 2 URL buttons on the activity card).
+        buttons = ["Invite Bot"]
+
         activity = discord.Activity(
             type=discord.ActivityType.listening,
             name=activity_name,
@@ -790,6 +809,8 @@ def _set_now_playing(
             state=state_text,
             timestamps=timestamps,
             assets=assets if assets else None,
+            party=party,
+            buttons=buttons,
         )
     else:
         activity = discord.Activity(type=discord.ActivityType.listening, name="nothing")
@@ -4118,9 +4139,35 @@ async def _song_of_the_day_task() -> None:
         if not isinstance(chan, discord.TextChannel):
             continue
         try:
-            await chan.send(embed=embed, view=view)
+            # Try webhook-based posting for a custom "Juice WRLD Radio" identity.
+            webhook = await _get_or_create_sotd_webhook(chan)
+            if webhook:
+                await webhook.send(
+                    embed=embed,
+                    view=view,
+                    username="Juice WRLD Radio",
+                    avatar_url=image_url if image_url else None,
+                )
+            else:
+                await chan.send(embed=embed, view=view)
         except Exception:
-            continue
+            # Fall back to normal bot message on any failure.
+            try:
+                await chan.send(embed=embed, view=view)
+            except Exception:
+                continue
+
+
+async def _get_or_create_sotd_webhook(channel: discord.TextChannel) -> Optional[discord.Webhook]:
+    """Get or create a webhook in the channel for SOTD posts."""
+    try:
+        webhooks = await channel.webhooks()
+        for wh in webhooks:
+            if wh.name == "JuiceWRLD-SOTD" and wh.user == bot.user:
+                return wh
+        return await channel.create_webhook(name="JuiceWRLD-SOTD")
+    except Exception:
+        return None
 
 
 @_song_of_the_day_task.before_loop
@@ -6788,6 +6835,93 @@ async def _play_random_song_in_guild(ctx: commands.Context) -> None:
         metadata=radio_meta,
         duration_seconds=duration_seconds,
     )
+
+
+# --- Context menu commands (right-click actions) ---
+
+
+@bot.tree.context_menu(name="View Listening Stats")
+async def context_view_stats(interaction: discord.Interaction, user: discord.Member) -> None:
+    """Right-click a user to view their listening stats."""
+    embed = _build_stats_embed(user)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+    _schedule_interaction_deletion(interaction, 30)
+
+
+@bot.tree.context_menu(name="Play This Song")
+async def context_play_from_message(interaction: discord.Interaction, message: discord.Message) -> None:
+    """Right-click a message (e.g. Now Playing / SOTD embed) to play that song."""
+
+    user = interaction.user
+    if not isinstance(user, discord.Member) or not user.voice or not user.voice.channel:
+        await interaction.response.send_message(
+            "You need to be in a voice channel to play music.", ephemeral=True
+        )
+        return
+
+    # Try to extract a song title from the message's embeds.
+    song_title: Optional[str] = None
+    for emb in message.embeds:
+        # SOTD embed: title is "Song of the Day", song name is in description bold text.
+        if emb.title and "Song of the Day" in emb.title and emb.description:
+            # Description is like "**Song Name**"
+            song_title = emb.description.strip("* ")
+            break
+        # Now Playing embed: title is "Now Playing", description is the song name.
+        if emb.title == "Now Playing" and emb.description:
+            song_title = emb.description.strip()
+            break
+        # Search result embed: description starts with **Name**
+        if emb.description and emb.description.startswith("**"):
+            # Extract the bold text: **Name** (ID: ...)
+            bold_end = emb.description.find("**", 2)
+            if bold_end > 2:
+                song_title = emb.description[2:bold_end]
+                break
+
+    if not song_title:
+        await interaction.response.send_message(
+            "Could not find a song in this message.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    # Search the API for this song and try to play it.
+    api = create_api_client()
+    try:
+        results = api.get_songs(search=song_title, page=1, page_size=1)
+    except Exception as e:
+        await interaction.followup.send(f"Error searching: {e}", ephemeral=True)
+        return
+    finally:
+        api.close()
+
+    songs = results.get("results") or []
+    if not songs:
+        await interaction.followup.send(
+            f"No playable song found for `{song_title}`.", ephemeral=True
+        )
+        return
+
+    song = songs[0]
+    song_id = getattr(song, "id", None)
+    if not song_id:
+        await interaction.followup.send("Song has no ID.", ephemeral=True)
+        return
+
+    # Use the existing play logic via a Context.
+    ctx = await commands.Context.from_interaction(interaction)
+    await play_song(ctx, str(song_id))
+    await interaction.followup.send(f"Playing **{song_title}**.", ephemeral=True)
+
+
+# --- Notes on features requiring external infrastructure ---
+# Linked Roles: Requires a web server with OAuth2 callback endpoint to handle
+#   Discord's Connection Metadata flow. Not feasible in bot-only code.
+#   See: https://discord.com/developers/docs/tutorials/configuring-app-metadata-for-linked-roles
+# Application Emojis: Custom emojis must be uploaded via the Discord Developer
+#   Portal or API. Once uploaded, reference them in embeds as <:name:id>.
 
 
 def main() -> None:
