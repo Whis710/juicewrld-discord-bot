@@ -805,7 +805,7 @@ def _set_now_playing(
         buttons = ["Invite Bot"]
 
         activity = discord.Activity(
-            type=discord.ActivityType.listening,
+            type=discord.ActivityType.playing,
             name=activity_name,
             details=title,
             state=state_text,
@@ -815,7 +815,7 @@ def _set_now_playing(
             buttons=buttons,
         )
     else:
-        activity = discord.Activity(type=discord.ActivityType.listening, name="nothing")
+        activity = discord.Activity(type=discord.ActivityType.playing, name="Juice WRLD Radio")
     asyncio.create_task(bot.change_presence(activity=activity))
 
 
@@ -4193,7 +4193,7 @@ async def _auto_disconnect_guild(guild: discord.Guild, reason: str = "inactivity
 
     # Clear the bot's Discord activity status.
     asyncio.create_task(
-        bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="nothing"))
+        bot.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Juice WRLD Radio"))
     )
 
     # Delete the Now Playing message after a brief moment.
@@ -4468,7 +4468,7 @@ async def sync_commands(ctx: commands.Context):
 
 
 # Bot version info
-BOT_VERSION = "2.1.0"
+BOT_VERSION = "2.2.0"
 BOT_BUILD_DATE = "2026-02-24"
 
 
@@ -4484,11 +4484,11 @@ async def version_command(ctx: commands.Context):
     embed.add_field(
         name="Recent Updates",
         value=(
+            "• 🎨 Rich Presence — album art, elapsed timer, party size on activity card\n"
             "• 🔗 Linked Roles — connect listening stats to Discord role requirements\n"
             "• 😀 Application Emojis — `!jw emoji` to manage app emojis\n"
             "• 🖱️ Context menus — right-click users/messages for quick actions\n"
             "• 📡 Webhook SOTD — Song of the Day posts with custom identity\n"
-            "• 🎵 Rich Presence — album art, party size, radio/play icons\n"
             "• `!jw eras` / `!jw era` — Browse musical eras\n"
             "• `!jw similar` — Find similar songs to what's playing\n"
             "• `!jw stats` — Personal listening stats"
