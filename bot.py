@@ -27,6 +27,16 @@ from discord.ext import commands, tasks
 from client import JuiceWRLDAPI
 from exceptions import JuiceWRLDAPIError, NotFoundError
 
+# New shared modules (v3.0)
+from constants import (
+    NOTHING_PLAYING,
+    BOT_VERSION as _CONST_BOT_VERSION,
+    BOT_BUILD_DATE as _CONST_BOT_BUILD_DATE,
+)
+import state as _state
+import helpers as _helpers
+from commands import core as _core
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 JUICEWRLD_API_BASE_URL = os.getenv("JUICEWRLD_API_BASE_URL", "https://juicewrldapi.com")
 
@@ -422,15 +432,6 @@ async def _delete_now_playing_message_after_delay(guild_id: int, delay: int) -> 
     await asyncio.sleep(delay)
     await _delete_now_playing_message(guild_id)
 
-
-async def _schedule_player_cleanup(guild_id: int, delay: int = 15) -> None:
-    """Previously deleted the Now Playing message after `delay` seconds if idle.
-
-    Now kept as a no-op placeholder; the player is treated as static and
-    reused, so we no longer auto-delete the player message on idle.
-    """
-
-    return
 
 
 def _ensure_queue(guild_id: int) -> List[Dict[str, Any]]:
@@ -2746,7 +2747,7 @@ class SharedPlaylistView(discord.ui.View):
             )
             # Auto-delete the queue confirmation after 5 seconds
             asyncio.create_task(_delete_later(queue_msg, 5))
-        # Delete the shared playlist message after 120 seconds (only on success)
+            # Delete the shared playlist message after 120 seconds (only on success)
             await self._schedule_message_deletion()
 
     async def _on_copy(self, interaction: discord.Interaction) -> None:
@@ -3713,6 +3714,12 @@ class PlayerView(discord.ui.View):
             await _send_ephemeral_temporary(interaction, "Nothing is currently tracked as playing.")
             return
 
+        # Guard: do not allow liking the idle "Nothing playing" sentinel.
+        title_val = info.get("title", "")
+        if not title_val or title_val == "Nothing playing":
+            await _send_ephemeral_temporary(interaction, "Nothing is currently playing to like.")
+            return
+
         meta = info.get("metadata") or {}
         title = str(info.get("title", meta.get("name") or "Unknown"))
         path = meta.get("path") or info.get("path")
@@ -4526,14 +4533,11 @@ async def slash_eras(interaction: discord.Interaction) -> None:
 
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    api = create_api_client()
     try:
-        eras = api.get_eras()
+        eras = await _core.fetch_eras()
     except JuiceWRLDAPIError as e:
         await interaction.followup.send(f"Error fetching eras: {e}", ephemeral=True)
         return
-    finally:
-        api.close()
 
     if not eras:
         await interaction.followup.send("No eras found.", ephemeral=True)
@@ -4589,14 +4593,11 @@ async def slash_era(interaction: discord.Interaction, era_name: str) -> None:
 
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    api = create_api_client()
     try:
-        results = api.get_songs(era=era_name, page=1, page_size=25)
+        results = await _core.fetch_era_songs(era_name)
     except JuiceWRLDAPIError as e:
         await interaction.followup.send(f"Error: {e}", ephemeral=True)
         return
-    finally:
-        api.close()
 
     songs = results.get("results") or []
     if not songs:
@@ -4621,57 +4622,10 @@ async def slash_similar(interaction: discord.Interaction) -> None:
         await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
         return
 
-    info = _guild_now_playing.get(guild.id)
-    title = info.get("title") if info else None
-    if not info or not title or title == "Nothing playing":
+    title, top = await _core.find_similar_songs(guild.id)
+    if not title:
         await interaction.followup.send("Nothing is currently playing. Play a song first!", ephemeral=True)
         return
-
-    meta = info.get("metadata") or {}
-    era_val = meta.get("era")
-    era_name = None
-    if isinstance(era_val, dict):
-        era_name = era_val.get("name")
-    elif era_val:
-        era_name = str(era_val)
-
-    producers_str = meta.get("producers") or ""
-    category = meta.get("category") or ""
-
-    candidates: List[Any] = []
-    api = create_api_client()
-    try:
-        if era_name:
-            res = api.get_songs(era=era_name, page=1, page_size=25)
-            candidates = res.get("results") or []
-        if len(candidates) < 5 and category:
-            res2 = api.get_songs(category=category, page=1, page_size=25)
-            existing_ids = {getattr(s, "id", None) for s in candidates}
-            for s in (res2.get("results") or []):
-                if getattr(s, "id", None) not in existing_ids:
-                    candidates.append(s)
-    except JuiceWRLDAPIError as e:
-        await interaction.followup.send(f"Error: {e}", ephemeral=True)
-        return
-    finally:
-        api.close()
-
-    candidates = [s for s in candidates if getattr(s, "name", None) != title]
-
-    def _score(song: Any) -> int:
-        sc = 0
-        s_era = getattr(getattr(song, "era", None), "name", "")
-        if era_name and s_era == era_name:
-            sc += 2
-        s_prod = getattr(song, "producers", "") or ""
-        if producers_str and s_prod and any(p.strip() in s_prod for p in producers_str.split(",") if p.strip()):
-            sc += 3
-        if category and getattr(song, "category", "") == category:
-            sc += 1
-        return sc
-
-    candidates.sort(key=_score, reverse=True)
-    top = candidates[:10]
 
     if not top:
         await interaction.followup.send(f"No similar songs found for **{title}**.", ephemeral=True)
@@ -4681,64 +4635,6 @@ async def slash_similar(interaction: discord.Interaction) -> None:
     view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top), is_ephemeral=True)
     embed = view.build_embed()
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-
-# @jw_group.command(name="song", description="Get details for a specific song by ID.")
-# @app_commands.describe(song_id="Numeric Juice WRLD song ID")
-# async def slash_song(interaction: discord.Interaction, song_id: int) -> None:
-#     """Ephemeral equivalent of !jw song <song_id>."""
-# 
-#     await interaction.response.defer(ephemeral=True, thinking=True)
-# 
-#     api = create_api_client()
-#     try:
-#         try:
-#             song = api.get_song(song_id)
-#         except NotFoundError:
-#             await interaction.followup.send(
-#                 f"No song found with ID `{song_id}`.", ephemeral=True
-#             )
-#             return
-#         except JuiceWRLDAPIError as e:
-#             await interaction.followup.send(
-#                 f"Error while fetching song: {e}", ephemeral=True
-#             )
-#             return
-#     finally:
-#         api.close()
-# 
-#     name = getattr(song, "name", getattr(song, "title", "Unknown"))
-#     category = getattr(song, "category", "?")
-#     length = getattr(song, "length", "?")
-#     era_name = getattr(getattr(song, "era", None), "name", "?")
-#     producers = getattr(song, "producers", None)
-# 
-#     desc_lines = [
-#         f"**{name}** (ID: `{song_id}`)",
-#         f"Category: `{category}`",
-#         f"Length: `{length}`",
-#         f"Era: `{era_name}`",
-#     ]
-#     if producers:
-#         desc_lines.append(f"Producers: {producers}")
-# 
-#     await interaction.followup.send("\n".join(desc_lines), ephemeral=True)
-
-
-# @jw_group.command(name="play", description="Play a Juice WRLD song in voice chat by ID.")
-# @app_commands.describe(song_id="Numeric Juice WRLD song ID")
-# async def slash_play(interaction: discord.Interaction, song_id: int) -> None:
-#     """Ephemeral wrapper that delegates to !jw play logic."""
-# 
-#     await interaction.response.defer(ephemeral=True, thinking=True)
-# 
-#     # Build a commands.Context from this interaction so we can reuse play_song.
-#     ctx = await commands.Context.from_interaction(interaction)
-#     await play_song(ctx, str(song_id))
-# 
-#     await interaction.followup.send(
-#         f"Requested playback for song ID `{song_id}`.", ephemeral=True
-#     )
 
 
 async def song_autocomplete(
@@ -4923,39 +4819,6 @@ async def slash_search(interaction: discord.Interaction, query: str) -> None:
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-# @jw_group.command(name="join", description="Make the bot join your current voice channel.")
-# async def slash_join(interaction: discord.Interaction) -> None:
-#     """Ephemeral equivalent of !jw join."""
-# 
-#     await interaction.response.defer(ephemeral=True, thinking=True)
-# 
-#     user = interaction.user
-#     if not isinstance(user, (discord.Member,)) or not user.voice or not user.voice.channel:
-#         await interaction.followup.send(
-#             "You need to be in a voice channel first.", ephemeral=True
-#         )
-#         return
-# 
-#     channel = user.voice.channel
-#     voice: Optional[discord.VoiceClient] = interaction.guild.voice_client if interaction.guild else None
-# 
-#     try:
-#         if voice and voice.is_connected():
-#             if voice.channel != channel:
-#                 await voice.move_to(channel)
-#         else:
-#             await channel.connect()
-#     except Exception as e:
-#         await interaction.followup.send(
-#             f"Failed to join voice channel: {e}", ephemeral=True
-#         )
-#         return
-# 
-#     await interaction.followup.send(
-#         f"Joined voice channel: {channel.name}", ephemeral=True
-#     )
-
-
 @jw_group.command(name="leave", description="Disconnect the bot from voice chat.")
 async def slash_leave(interaction: discord.Interaction) -> None:
     """Ephemeral equivalent of !jw leave."""
@@ -4964,18 +4827,16 @@ async def slash_leave(interaction: discord.Interaction) -> None:
 
     guild = interaction.guild
     voice: Optional[discord.VoiceClient] = guild.voice_client if guild else None
-    if not voice or not voice.is_connected():
+
+    disconnected = await _core.leave_voice_channel(
+        guild, voice, delete_np_callback=_delete_now_playing_message_after_delay,
+    )
+    if not disconnected:
         await interaction.followup.send(
             "I'm not connected to a voice channel.", ephemeral=True
         )
         return
 
-    if guild:
-        _guild_radio_enabled[guild.id] = False
-        _guild_radio_next.pop(guild.id, None)
-        asyncio.create_task(_delete_now_playing_message_after_delay(guild.id, 1))
-
-    await voice.disconnect()
     await _send_ephemeral_temporary(interaction, "Disconnected from voice channel.")
 
 
@@ -5051,302 +4912,6 @@ async def slash_playlists(interaction: discord.Interaction) -> None:
     embed = view.build_embed()
 
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-
-# Deprecated: Use /jw playlists UI instead
-# @jw_group.command(name="playlist_create", description="Create a new empty playlist.")
-# @app_commands.describe(name="Name for the new playlist")
-# async def slash_playlist_create(interaction: discord.Interaction, name: str) -> None:
-#     """Ephemeral slash command to create a new empty playlist."""
-# 
-#     user = interaction.user
-#     playlists = _get_or_create_user_playlists(user.id)
-# 
-#     if name in playlists:
-#         await interaction.response.send_message(
-#             f"You already have a playlist named `{name}`.", ephemeral=True
-#         )
-#         # Schedule deletion after 5 seconds
-#         async def _delete_after_delay() -> None:
-#             await asyncio.sleep(5)
-#             try:
-#                 await interaction.delete_original_response()
-#             except Exception:
-#                 pass
-#         asyncio.create_task(_delete_after_delay())
-#         return
-# 
-#     playlists[name] = []
-#     _save_user_playlists_to_disk()
-# 
-#     await interaction.response.send_message(
-#         f"Created empty playlist `{name}`.", ephemeral=True
-#     )
-#     
-#     # Schedule deletion after 5 seconds
-#     async def _delete_after_delay() -> None:
-#         await asyncio.sleep(5)
-#         try:
-#             await interaction.delete_original_response()
-#         except Exception:
-#             pass
-#     asyncio.create_task(_delete_after_delay())
-
-
-# Deprecated: Use /jw playlists UI instead
-# @jw_group.command(name="playlist_rename", description="Rename one of your playlists.")
-# @app_commands.describe(old="Current playlist name", new="New playlist name")
-# async def slash_playlist_rename(interaction: discord.Interaction, old: str, new: str) -> None:
-#     """Ephemeral slash command to rename a playlist."""
-# 
-#     user = interaction.user
-#     playlists = _user_playlists.get(user.id) or {}
-# 
-#     if old not in playlists:
-#         await interaction.response.send_message(
-#             f"No playlist named `{old}` found.", ephemeral=True
-#         )
-#         # Schedule deletion after 5 seconds
-#         async def _delete_after_delay() -> None:
-#             await asyncio.sleep(5)
-#             try:
-#                 await interaction.delete_original_response()
-#             except Exception:
-#                 pass
-#         asyncio.create_task(_delete_after_delay())
-#         return
-# 
-#     if new in playlists:
-#         await interaction.response.send_message(
-#             f"You already have a playlist named `{new}`.", ephemeral=True
-#         )
-#         # Schedule deletion after 5 seconds
-#         async def _delete_after_delay() -> None:
-#             await asyncio.sleep(5)
-#             try:
-#                 await interaction.delete_original_response()
-#             except Exception:
-#                 pass
-#         asyncio.create_task(_delete_after_delay())
-#         return
-# 
-#     playlists[new] = playlists.pop(old)
-#     _save_user_playlists_to_disk()
-# 
-#     await interaction.response.send_message(
-#         f"Renamed playlist `{old}` to `{new}`.", ephemeral=True
-#     )
-#     
-#     # Schedule deletion after 5 seconds
-#     async def _delete_after_delay() -> None:
-#         await asyncio.sleep(5)
-#         try:
-#             await interaction.delete_original_response()
-#         except Exception:
-#             pass
-#     asyncio.create_task(_delete_after_delay())
-
-
-# Deprecated: Use /jw playlists UI instead
-# @jw_group.command(name="playlist_delete", description="Delete one of your playlists.")
-# @app_commands.describe(name="Name of the playlist to delete")
-# async def slash_playlist_delete(interaction: discord.Interaction, name: str) -> None:
-#     """Ephemeral slash command to delete a playlist."""
-# 
-#     user = interaction.user
-#     playlists = _user_playlists.get(user.id) or {}
-# 
-#     if name not in playlists:
-#         await interaction.response.send_message(
-#             f"No playlist named `{name}` found.", ephemeral=True
-#         )
-#         # Schedule deletion after 5 seconds
-#         async def _delete_after_delay() -> None:
-#             await asyncio.sleep(5)
-#             try:
-#                 await interaction.delete_original_response()
-#             except Exception:
-#                 pass
-#         asyncio.create_task(_delete_after_delay())
-#         return
-# 
-#     del playlists[name]
-#     if not playlists:
-#         _user_playlists.pop(user.id, None)
-# 
-#     _save_user_playlists_to_disk()
-# 
-#     await interaction.response.send_message(
-#         f"Deleted playlist `{name}`.", ephemeral=True
-#     )
-#     
-#     # Schedule deletion after 5 seconds
-#     async def _delete_after_delay() -> None:
-#         await asyncio.sleep(5)
-#         try:
-#             await interaction.delete_original_response()
-#         except Exception:
-#             pass
-#     asyncio.create_task(_delete_after_delay())
-
-
-# Deprecated: Use /jw playlists UI instead
-# @jw_group.command(name="playlist_add_song", description="Add a song to one of your playlists.")
-# @app_commands.describe(playlist_name="Name of the playlist", song_id="Numeric Juice WRLD song ID")
-# async def slash_playlist_add_song(interaction: discord.Interaction, playlist_name: str, song_id: int) -> None:
-#     """Ephemeral slash command to add a song to a playlist."""
-# 
-#     await interaction.response.defer(ephemeral=True, thinking=True)
-# 
-#     user = interaction.user
-#     playlists = _get_or_create_user_playlists(user.id)
-#     playlist = playlists.setdefault(playlist_name, [])
-# 
-#     # Resolve a comp file path for this song using the player endpoint.
-#     api = create_api_client()
-#     try:
-#         player_result = api.play_juicewrld_song(song_id)
-#     finally:
-#         api.close()
-# 
-#     status = player_result.get("status")
-#     error_detail = player_result.get("error")
-# 
-#     if status == "not_found":
-#         await interaction.followup.send(
-#             f"No playable song found for ID `{song_id}` in the player endpoint; "
-#             "it may not be available for streaming yet.",
-#             ephemeral=True,
-#         )
-#         # Schedule deletion after 5 seconds
-#         async def _delete_after_delay() -> None:
-#             await asyncio.sleep(5)
-#             try:
-#                 await interaction.delete_original_response()
-#             except Exception:
-#                 pass
-#         asyncio.create_task(_delete_after_delay())
-#         return
-# 
-#     if status and status not in {"success", "file_not_found_but_url_provided"}:
-#         if error_detail:
-#             await interaction.followup.send(
-#                 f"Could not get a playable file path for song `{song_id}` "
-#                 f"(status: {status}). Details: {error_detail}",
-#                 ephemeral=True,
-#             )
-#         else:
-#             await interaction.followup.send(
-#                 f"Could not get a playable file path for song `{song_id}` "
-#                 f"(status: {status}).",
-#                 ephemeral=True,
-#             )
-#         # Schedule deletion after 5 seconds
-#         async def _delete_after_delay() -> None:
-#             await asyncio.sleep(5)
-#             try:
-#                 await interaction.delete_original_response()
-#             except Exception:
-#                 pass
-#         asyncio.create_task(_delete_after_delay())
-#         return
-# 
-#     file_path = player_result.get("file_path")
-#     if not file_path:
-#         await interaction.followup.send(
-#             f"Player endpoint did not return a comp file path for song `{song_id}`; "
-#             "cannot add to playlist.",
-#             ephemeral=True,
-#         )
-#         # Schedule deletion after 5 seconds
-#         async def _delete_after_delay() -> None:
-#             await asyncio.sleep(5)
-#             try:
-#                 await interaction.delete_original_response()
-#             except Exception:
-#                 pass
-#         asyncio.create_task(_delete_after_delay())
-#         return
-# 
-#     # Fetch full song metadata for display and future playback.
-#     api = create_api_client()
-#     try:
-#         song_obj = api.get_song(song_id)
-#     except Exception:
-#         song_obj = None
-#     finally:
-#         api.close()
-# 
-#     if song_obj is not None:
-#         image_url = getattr(song_obj, "image_url", None)
-#         if image_url and isinstance(image_url, str) and image_url.startswith("/"):
-#             image_url = f"{JUICEWRLD_API_BASE_URL}{image_url}"
-#         meta = _build_song_metadata_from_song(
-#             song_obj,
-#             path=file_path,
-#             image_url=image_url,
-#         )
-#     else:
-#         meta = {"id": song_id, "path": file_path}
-# 
-#     title = str(meta.get("name") or f"Song {song_id}")
-#     song_id_val = meta.get("id") or meta.get("song_id")
-# 
-#     # Avoid duplicates: match by song ID or path
-#     for track in playlist:
-#         if song_id_val is not None and track.get("id") == song_id_val:
-#             await interaction.followup.send(
-#                 f"`{title}` is already in playlist `{playlist_name}`.",
-#                 ephemeral=True,
-#             )
-#             # Schedule deletion after 5 seconds
-#             async def _delete_after_delay() -> None:
-#                 await asyncio.sleep(5)
-#                 try:
-#                     await interaction.delete_original_response()
-#                 except Exception:
-#                     pass
-#             asyncio.create_task(_delete_after_delay())
-#             return
-#         if file_path and track.get("path") == file_path:
-#             await interaction.followup.send(
-#                 f"`{title}` is already in playlist `{playlist_name}`.",
-#                 ephemeral=True,
-#             )
-#             # Schedule deletion after 5 seconds
-#             async def _delete_after_delay() -> None:
-#                 await asyncio.sleep(5)
-#                 try:
-#                     await interaction.delete_original_response()
-#                 except Exception:
-#                     pass
-#             asyncio.create_task(_delete_after_delay())
-#             return
-# 
-#     playlist.append(
-#         {
-#             "id": song_id_val,
-#             "name": title,
-#             "path": file_path,
-#             "metadata": meta,
-#             "added_at": time.time(),
-#         }
-#     )
-# 
-#     _save_user_playlists_to_disk()
-#     await interaction.followup.send(
-#         f"Added `{title}` (ID `{song_id}`) to playlist `{playlist_name}`.",
-#         ephemeral=True,
-#     )
-#     
-#     # Schedule deletion after 5 seconds
-#     async def _delete_after_delay() -> None:
-#         await asyncio.sleep(5)
-#         try:
-#             await interaction.delete_original_response()
-#         except Exception:
-#             pass
-#     asyncio.create_task(_delete_after_delay())
 
 
 @bot.command(name="sotd")
@@ -6167,7 +5732,7 @@ async def playlist_show(ctx: commands.Context, *, name: str):
 
     playlists = _user_playlists.get(ctx.author.id) or {}
     playlist = playlists.get(name)
-    if not playlist:
+    if playlist is None:
         await ctx.send(f"No playlist named `{name}` found.")
         return
 
@@ -6201,7 +5766,7 @@ async def playlist_play(ctx: commands.Context, *, name: str):
 
     playlists = _user_playlists.get(ctx.author.id) or {}
     playlist = playlists.get(name)
-    if not playlist:
+    if playlist is None:
         await ctx.send(f"No playlist named `{name}` found.")
         return
 
