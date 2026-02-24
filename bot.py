@@ -85,6 +85,13 @@ def _get_or_create_user_playlists(user_id: int) -> Dict[str, List[Dict[str, Any]
 
 
 PLAYLISTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "playlists.json")
+STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "listening_stats.json")
+
+# Per-user listening stats:
+# { user_id: { "total_plays": int, "total_seconds": int,
+#              "songs": { song_name: play_count },
+#              "eras": { era_name: play_count } } }
+_user_listening_stats: Dict[int, Dict[str, Any]] = {}
 
 
 def _serialize_user_playlists_for_json() -> Dict[str, Any]:
@@ -132,7 +139,60 @@ def _save_user_playlists_to_disk() -> None:
         return
 
 
+def _load_listening_stats_from_disk() -> None:
+    """Load listening stats from disk into memory (best-effort)."""
+    global _user_listening_stats
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (FileNotFoundError, Exception):
+        return
+    if not isinstance(raw, dict):
+        return
+    loaded: Dict[int, Dict[str, Any]] = {}
+    for uid_str, data in raw.items():
+        try:
+            loaded[int(uid_str)] = data
+        except (TypeError, ValueError):
+            continue
+    if loaded:
+        _user_listening_stats = loaded
+
+
+def _save_listening_stats_to_disk() -> None:
+    """Persist listening stats to disk (best-effort)."""
+    try:
+        serialized = {str(uid): data for uid, data in _user_listening_stats.items()}
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(serialized, f, ensure_ascii=False)
+    except Exception:
+        return
+
+
+def _record_listen(user_id: int, title: str, era_name: Optional[str], duration_seconds: Optional[int]) -> None:
+    """Record a song play for a user's listening stats."""
+    stats = _user_listening_stats.setdefault(user_id, {
+        "total_plays": 0,
+        "total_seconds": 0,
+        "songs": {},
+        "eras": {},
+    })
+    stats["total_plays"] = stats.get("total_plays", 0) + 1
+    if duration_seconds and duration_seconds > 0:
+        stats["total_seconds"] = stats.get("total_seconds", 0) + duration_seconds
+
+    songs = stats.setdefault("songs", {})
+    songs[title] = songs.get(title, 0) + 1
+
+    if era_name and era_name.strip():
+        eras = stats.setdefault("eras", {})
+        eras[era_name] = eras.get(era_name, 0) + 1
+
+    _save_listening_stats_to_disk()
+
+
 _load_user_playlists_from_disk()
+_load_listening_stats_from_disk()
 
 
 def _parse_length_to_seconds(length: str) -> Optional[int]:
@@ -543,6 +603,57 @@ def _build_playlists_embed_for_user(user: discord.abc.User, playlists: Dict[str,
     return embed
 
 
+def _build_stats_embed(user: discord.abc.User) -> discord.Embed:
+    """Construct an embed showing a user's personal listening stats."""
+
+    stats = _user_listening_stats.get(getattr(user, "id", 0))
+    display_name = getattr(user, "display_name", str(user))
+
+    if not stats or stats.get("total_plays", 0) == 0:
+        embed = discord.Embed(
+            title=f"{display_name}'s Listening Stats",
+            description="No listening history yet. Play some songs to start tracking!",
+            colour=discord.Colour.greyple(),
+        )
+        return embed
+
+    total_plays = stats.get("total_plays", 0)
+    total_seconds = stats.get("total_seconds", 0)
+    songs = stats.get("songs", {})
+    eras = stats.get("eras", {})
+
+    # Format total listen time
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        time_str = f"{hours}h {minutes}m"
+    elif minutes:
+        time_str = f"{minutes}m {secs}s"
+    else:
+        time_str = f"{secs}s"
+
+    embed = discord.Embed(
+        title=f"{display_name}'s Listening Stats",
+        colour=discord.Colour.purple(),
+    )
+    embed.add_field(name="Total Plays", value=str(total_plays), inline=True)
+    embed.add_field(name="Listen Time", value=time_str, inline=True)
+
+    # Top 5 songs
+    if songs:
+        top_songs = sorted(songs.items(), key=lambda x: x[1], reverse=True)[:5]
+        lines = [f"`{i}.` **{name}** — {count} play{'s' if count != 1 else ''}" for i, (name, count) in enumerate(top_songs, 1)]
+        embed.add_field(name="Top Songs", value="\n".join(lines), inline=False)
+
+    # Top 3 eras
+    if eras:
+        top_eras = sorted(eras.items(), key=lambda x: x[1], reverse=True)[:3]
+        lines = [f"`{i}.` **{name}** — {count} play{'s' if count != 1 else ''}" for i, (name, count) in enumerate(top_eras, 1)]
+        embed.add_field(name="Top Eras", value="\n".join(lines), inline=False)
+
+    return embed
+
+
 def _touch_activity(guild_id: int) -> None:
     """Update the last-activity timestamp for a guild."""
     _guild_last_activity[guild_id] = time.time()
@@ -595,6 +706,26 @@ def _set_now_playing(
 
     # Mark activity so the idle auto-leave timer resets.
     _touch_activity(guild_id)
+
+    # Record the listen for the requester's stats.
+    if title and title != "Nothing playing":
+        user_id = getattr(ctx.author, "id", None)
+        if user_id:
+            era_name = None
+            meta = metadata or {}
+            era_val = meta.get("era")
+            if isinstance(era_val, dict):
+                era_name = era_val.get("name")
+            elif era_val:
+                era_name = str(era_val)
+            _record_listen(user_id, title, era_name, duration_seconds)
+
+    # Update the bot's Discord activity to show the current song.
+    if title and title != "Nothing playing":
+        activity = discord.Activity(type=discord.ActivityType.listening, name=title)
+    else:
+        activity = discord.Activity(type=discord.ActivityType.listening, name="nothing")
+    asyncio.create_task(bot.change_presence(activity=activity))
 
 
 class SingleSongResultView(discord.ui.View):
@@ -3822,6 +3953,11 @@ async def _auto_disconnect_guild(guild: discord.Guild, reason: str = "inactivity
             voice.stop()
         await voice.disconnect()
 
+    # Clear the bot's Discord activity status.
+    asyncio.create_task(
+        bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="nothing"))
+    )
+
     # Delete the Now Playing message after a brief moment.
     asyncio.create_task(_delete_now_playing_message_after_delay(guild_id, 1))
 
@@ -4015,6 +4151,12 @@ async def help_command(ctx: commands.Context):
     ]
     embed.add_field(name="Playlists", value="\n".join(playlist_lines), inline=False)
 
+    misc_lines = [
+        "`!jw stats` — View your personal listening stats.",
+        "`!jw ver` — Show bot version and recent updates.",
+    ]
+    embed.add_field(name="Misc", value="\n".join(misc_lines), inline=False)
+
     embed.set_footer(text="Prefix: !jw  •  Example: !jw play 12345")
 
     await ctx.send(embed=embed)
@@ -4074,7 +4216,7 @@ async def sync_commands(ctx: commands.Context):
 
 
 # Bot version info
-BOT_VERSION = "1.7.1"
+BOT_VERSION = "1.8.0"
 BOT_BUILD_DATE = "2026-02-24"
 
 
@@ -4090,14 +4232,14 @@ async def version_command(ctx: commands.Context):
     embed.add_field(
         name="Recent Updates",
         value=(
+            "• `!jw stats` / `/jw stats` — Personal listening stats\n"
+            "• Bot now shows current song as its Discord activity\n"
             "• `/jw play` autocomplete now only shows playable songs\n"
             "• Auto-leave after 30 min of inactivity\n"
             "• Auto-leave when everyone leaves the voice channel\n"
             "• Radio now lets current song finish before starting\n"
             "• `/jw play` with autocomplete search\n"
-            "• `/jw search` with autocomplete\n"
-            "• Fixed radio skipping issue\n"
-            "• Play/Add/Info buttons on search results"
+            "• `/jw search` with autocomplete"
         ),
         inline=False,
     )
@@ -4114,6 +4256,15 @@ async def slash_ping(interaction: discord.Interaction) -> None:
     """Ephemeral equivalent of !jw ping."""
 
     await interaction.response.send_message("Pong!", ephemeral=True)
+
+
+@jw_group.command(name="stats", description="View your personal listening stats.")
+async def slash_stats(interaction: discord.Interaction) -> None:
+    """Ephemeral equivalent of !jw stats."""
+
+    embed = _build_stats_embed(interaction.user)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+    _schedule_interaction_deletion(interaction, 30)
 
 
 # @jw_group.command(name="song", description="Get details for a specific song by ID.")
@@ -4780,6 +4931,14 @@ async def slash_playlists(interaction: discord.Interaction) -> None:
 #         except Exception:
 #             pass
 #     asyncio.create_task(_delete_after_delay())
+
+
+@bot.command(name="stats")
+async def listening_stats(ctx: commands.Context):
+    """Show the user's personal listening stats."""
+
+    embed = _build_stats_embed(ctx.author)
+    await _send_temporary(ctx, embed=embed, delay=30)
 
 
 @bot.command(name="search")
