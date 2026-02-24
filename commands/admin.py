@@ -28,8 +28,22 @@ class AdminCog(commands.Cog):
         self.bot = bot
         self._song_of_the_day_task.start()
 
+        # Context menus must be registered manually in Cogs.
+        self._ctx_menu_stats = app_commands.ContextMenu(
+            name="View Listening Stats",
+            callback=self.context_view_stats,
+        )
+        self._ctx_menu_play = app_commands.ContextMenu(
+            name="Play This Song",
+            callback=self.context_play_from_message,
+        )
+        self.bot.tree.add_command(self._ctx_menu_stats)
+        self.bot.tree.add_command(self._ctx_menu_play)
+
     def cog_unload(self) -> None:
         self._song_of_the_day_task.cancel()
+        self.bot.tree.remove_command(self._ctx_menu_stats.name, type=self._ctx_menu_stats.type)
+        self.bot.tree.remove_command(self._ctx_menu_play.name, type=self._ctx_menu_play.type)
 
     @property
     def _playback(self):
@@ -233,11 +247,6 @@ class AdminCog(commands.Cog):
             print(f"Sync error: {e}", file=sys.stderr)
 
 
-    # Bot version info (canonical values live in constants.py)
-    BOT_VERSION = _CONST_BOT_VERSION
-    BOT_BUILD_DATE = _CONST_BOT_BUILD_DATE
-
-
     @commands.command(name="ver", aliases=["version"])
     async def version_command(self, ctx: commands.Context):
         """Show bot version information."""
@@ -278,16 +287,6 @@ class AdminCog(commands.Cog):
         await helpers.send_temporary(ctx, f"Song of the Day will be posted daily in {channel.mention}.")
 
 
-    @commands.command(name="stats")
-    async def listening_stats(self, ctx: commands.Context):
-        """Show the user's personal listening stats."""
-
-        embed = helpers.build_stats_embed(ctx.author)
-        await helpers.send_temporary(ctx, embed=embed, delay=30)
-
-
-
-    @app_commands.context_menu(name="View Listening Stats")
     async def context_view_stats(self, interaction: discord.Interaction, user: discord.Member) -> None:
         """Right-click a user to view their listening stats."""
         embed = helpers.build_stats_embed(user)
@@ -295,7 +294,6 @@ class AdminCog(commands.Cog):
         helpers.schedule_interaction_deletion(interaction, 30)
 
 
-    @app_commands.context_menu(name="Play This Song")
     async def context_play_from_message(self, interaction: discord.Interaction, message: discord.Message) -> None:
         """Right-click a message (e.g. Now Playing / SOTD embed) to play that song."""
 
