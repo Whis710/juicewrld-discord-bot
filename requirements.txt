@@ -3,3 +3,5 @@ aiohttp==3.13.3
 requests==2.32.5
 PyNaCl==1.6.2
 juicewrld-api-wrapper==1.0.4
+fastapi==0.115.8
+uvicorn==0.34.0

@@ -14,10 +14,12 @@ import math
 import time
 import json
 import io
+import base64
 from typing import Optional, Dict, Any, List
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -4297,6 +4299,9 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync application commands: {e}", file=sys.stderr)
 
+    # Start linked roles web server (if configured).
+    await _start_linked_roles_server()
+
 
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
@@ -4399,6 +4404,7 @@ async def help_command(ctx: commands.Context):
     misc_lines = [
         "`!jw stats` — View your personal listening stats.",
         "`!jw sotd #channel` — Set the Song of the Day channel (admin).",
+        "`!jw emoji list|upload|delete` — Manage application emojis (admin).",
         "`!jw ver` — Show bot version and recent updates.",
     ]
     embed.add_field(name="Misc", value="\n".join(misc_lines), inline=False)
@@ -4462,7 +4468,7 @@ async def sync_commands(ctx: commands.Context):
 
 
 # Bot version info
-BOT_VERSION = "1.9.0"
+BOT_VERSION = "2.1.0"
 BOT_BUILD_DATE = "2026-02-24"
 
 
@@ -4478,13 +4484,14 @@ async def version_command(ctx: commands.Context):
     embed.add_field(
         name="Recent Updates",
         value=(
-            "• 🎵 Song of the Day — daily featured song with Play button\n"
-            "• `!jw eras` / `/jw eras` — Browse all musical eras\n"
-            "• `!jw era` / `/jw era` — Songs from a specific era (with autocomplete)\n"
-            "• `!jw similar` / `/jw similar` — Find similar songs to what's playing\n"
-            "• `!jw stats` / `/jw stats` — Personal listening stats\n"
-            "• Bot shows current song as its Discord activity\n"
-            "• Auto-leave on 30 min inactivity or empty VC"
+            "• 🔗 Linked Roles — connect listening stats to Discord role requirements\n"
+            "• 😀 Application Emojis — `!jw emoji` to manage app emojis\n"
+            "• 🖱️ Context menus — right-click users/messages for quick actions\n"
+            "• 📡 Webhook SOTD — Song of the Day posts with custom identity\n"
+            "• 🎵 Rich Presence — album art, party size, radio/play icons\n"
+            "• `!jw eras` / `!jw era` — Browse musical eras\n"
+            "• `!jw similar` — Find similar songs to what's playing\n"
+            "• `!jw stats` — Personal listening stats"
         ),
         inline=False,
     )
@@ -6916,12 +6923,190 @@ async def context_play_from_message(interaction: discord.Interaction, message: d
     await interaction.followup.send(f"Playing **{song_title}**.", ephemeral=True)
 
 
-# --- Notes on features requiring external infrastructure ---
-# Linked Roles: Requires a web server with OAuth2 callback endpoint to handle
-#   Discord's Connection Metadata flow. Not feasible in bot-only code.
-#   See: https://discord.com/developers/docs/tutorials/configuring-app-metadata-for-linked-roles
-# Application Emojis: Custom emojis must be uploaded via the Discord Developer
-#   Portal or API. Once uploaded, reference them in embeds as <:name:id>.
+# --- Application Emojis management (admin) ---
+
+
+@bot.command(name="emoji")
+@commands.has_permissions(administrator=True)
+async def emoji_command(ctx: commands.Context, action: str = "list", *, name: str = ""):
+    """Manage application emojis.
+
+    Usage:
+        !jw emoji list             — List all app emojis
+        !jw emoji upload <name>    — Upload an attached image as an app emoji
+        !jw emoji delete <name>    — Delete an app emoji by name
+    """
+    app_id = bot.user.id if bot.user else None
+    if not app_id:
+        await ctx.send("Bot is not ready yet.")
+        return
+
+    action = action.lower()
+
+    if action == "list":
+        await _emoji_list(ctx, app_id)
+    elif action == "upload":
+        await _emoji_upload(ctx, app_id, name.strip())
+    elif action == "delete":
+        await _emoji_delete(ctx, app_id, name.strip())
+    else:
+        await _send_temporary(ctx, "Usage: `!jw emoji list`, `!jw emoji upload <name>`, `!jw emoji delete <name>`")
+
+
+async def _emoji_list(ctx: commands.Context, app_id: int) -> None:
+    """List all application emojis."""
+    url = f"https://discord.com/api/v10/applications/{app_id}/emojis"
+    headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            if resp.status != 200:
+                await ctx.send(f"Failed to fetch emojis: HTTP {resp.status}")
+                return
+            data = await resp.json()
+
+    items = data.get("items", [])
+    if not items:
+        await ctx.send("No application emojis uploaded yet.")
+        return
+
+    lines = []
+    for e in items:
+        eid = e.get("id", "?")
+        ename = e.get("name", "?")
+        animated = e.get("animated", False)
+        prefix = "a" if animated else ""
+        lines.append(f"<{prefix}:{ename}:{eid}> `{ename}` (ID: {eid})")
+
+    embed = discord.Embed(
+        title=f"Application Emojis ({len(items)})",
+        description="\n".join(lines),
+        colour=discord.Colour.purple(),
+    )
+    await ctx.send(embed=embed)
+
+
+async def _emoji_upload(ctx: commands.Context, app_id: int, name: str) -> None:
+    """Upload an attached image as an application emoji."""
+    if not name:
+        await _send_temporary(ctx, "Provide a name: `!jw emoji upload my_emoji` (attach an image).")
+        return
+
+    if not ctx.message.attachments:
+        await _send_temporary(ctx, "Attach an image file to upload as an emoji.")
+        return
+
+    attachment = ctx.message.attachments[0]
+    if not attachment.content_type or not attachment.content_type.startswith("image/"):
+        await _send_temporary(ctx, "The attachment must be an image (PNG, GIF, etc.).")
+        return
+
+    image_bytes = await attachment.read()
+    if len(image_bytes) > 256 * 1024:
+        await _send_temporary(ctx, "Image must be under 256 KB.")
+        return
+
+    # Determine MIME type for data URI.
+    mime = attachment.content_type or "image/png"
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    data_uri = f"data:{mime};base64,{b64}"
+
+    url = f"https://discord.com/api/v10/applications/{app_id}/emojis"
+    headers = {
+        "Authorization": f"Bot {DISCORD_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {"name": name, "image": data_uri}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status in (200, 201):
+                result = await resp.json()
+                eid = result.get("id", "?")
+                await ctx.send(f"✅ Emoji `{name}` uploaded! Use it as `<:{name}:{eid}>`")
+            else:
+                body = await resp.text()
+                await ctx.send(f"❌ Upload failed: HTTP {resp.status}\n```{body[:500]}```")
+
+
+async def _emoji_delete(ctx: commands.Context, app_id: int, name: str) -> None:
+    """Delete an application emoji by name."""
+    if not name:
+        await _send_temporary(ctx, "Provide the emoji name: `!jw emoji delete my_emoji`")
+        return
+
+    # First, find the emoji ID by listing all.
+    list_url = f"https://discord.com/api/v10/applications/{app_id}/emojis"
+    headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(list_url, headers=headers) as resp:
+            if resp.status != 200:
+                await ctx.send(f"Failed to list emojis: HTTP {resp.status}")
+                return
+            data = await resp.json()
+
+        items = data.get("items", [])
+        target = None
+        for e in items:
+            if e.get("name", "").lower() == name.lower():
+                target = e
+                break
+
+        if not target:
+            await _send_temporary(ctx, f"No emoji named `{name}` found.")
+            return
+
+        eid = target["id"]
+        del_url = f"https://discord.com/api/v10/applications/{app_id}/emojis/{eid}"
+        async with session.delete(del_url, headers=headers) as resp:
+            if resp.status == 204:
+                await ctx.send(f"✅ Emoji `{name}` deleted.")
+            else:
+                body = await resp.text()
+                await ctx.send(f"❌ Delete failed: HTTP {resp.status}\n```{body[:500]}```")
+
+
+# --- Linked Roles server (started in on_ready) ---
+
+
+async def _start_linked_roles_server() -> None:
+    """Start the linked roles FastAPI server if credentials are configured."""
+    client_id = os.getenv("DISCORD_CLIENT_ID", "")
+    client_secret = os.getenv("DISCORD_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        print("[linked_roles] DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET not set — skipping.")
+        return
+
+    try:
+        from linked_roles import (
+            app as lr_app,
+            set_stats_callback,
+            register_metadata_schema,
+            LINKED_ROLES_PORT,
+        )
+        import uvicorn
+    except ImportError as e:
+        print(f"[linked_roles] Missing dependency: {e} — skipping.")
+        return
+
+    # Let the web server look up stats from the bot's in-memory data.
+    def _get_user_stats(user_id: int) -> Optional[Dict[str, Any]]:
+        return _user_listening_stats.get(user_id)
+
+    set_stats_callback(_get_user_stats)
+
+    # Register the connection metadata schema with Discord.
+    if DISCORD_TOKEN:
+        ok = await register_metadata_schema(DISCORD_TOKEN)
+        if ok:
+            print("[linked_roles] Metadata schema registered.")
+
+    # Run uvicorn in the background on the existing event loop.
+    config = uvicorn.Config(lr_app, host="0.0.0.0", port=LINKED_ROLES_PORT, log_level="warning")
+    server = uvicorn.Server(config)
+    asyncio.create_task(server.serve())
+    print(f"[linked_roles] Web server started on port {LINKED_ROLES_PORT}.")
 
 
 def main() -> None:
