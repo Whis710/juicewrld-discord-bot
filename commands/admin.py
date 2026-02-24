@@ -248,16 +248,14 @@ class AdminCog(commands.Cog):
             colour=discord.Colour.green(),
         )
         embed.add_field(
-            name="Recent Updates",
+            name="Recent Updates (v3.1.0)",
             value=(
-                "• 🎨 Rich Presence — album art, elapsed timer, party size on activity card\n"
-                "• 🔗 Linked Roles — connect listening stats to Discord role requirements\n"
-                "• 😀 Application Emojis — `!jw emoji` to manage app emojis\n"
-                "• 🖱️ Context menus — right-click users/messages for quick actions\n"
-                "• 📡 Webhook SOTD — Song of the Day posts with custom identity\n"
-                "• `!jw eras` / `!jw era` — Browse musical eras\n"
-                "• `!jw similar` — Find similar songs to what's playing\n"
-                "• `!jw stats` — Personal listening stats"
+                "• 🏗️ Modular refactor — bot split into Cogs for cleaner code\n"
+                "• 🔧 Session management — shared HTTP sessions, proper cleanup on shutdown\n"
+                "• 📋 Paginated playlists — `!jw pl show` now uses embeds instead of truncating\n"
+                "• 🔇 Ephemeral slash commands — `/jw radio` and `/jw stop` no longer post publicly\n"
+                "• ⚡ Player performance — cached messages reduce API calls\n"
+                "• 🐛 Bug fixes — SOTD play button, context menu play, radio error logging"
             ),
             inline=False,
         )
