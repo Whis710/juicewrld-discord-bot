@@ -26,6 +26,7 @@ class Era:
     name: str
     description: str
     time_frame: str
+    play_count: int = 0
 
 
 @dataclass
