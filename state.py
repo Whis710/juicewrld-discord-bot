@@ -198,8 +198,14 @@ def touch_activity(guild_id: int) -> None:
     guild_last_activity[guild_id] = time.time()
 
 
-# ── Load persisted data on import ────────────────────────────────────
+# ── Explicit initialisation ───────────────────────────────────────
 
-load_user_playlists_from_disk()
-load_listening_stats_from_disk()
-load_sotd_config()
+def load_all() -> None:
+    """Load all persisted data from disk.
+
+    Call once during bot startup (e.g. from ``main()``) rather than at
+    module-import time so that tests and re-imports stay side-effect free.
+    """
+    load_user_playlists_from_disk()
+    load_listening_stats_from_disk()
+    load_sotd_config()

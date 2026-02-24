@@ -13,8 +13,11 @@ from constants import AUTO_LEAVE_IDLE_SECONDS, NOTHING_PLAYING
 from exceptions import JuiceWRLDAPIError, NotFoundError
 import helpers
 import state
-from commands import core as _core
 from views.player import PlayerView, build_player_embed
+
+# FFmpeg options shared by all playback paths.
+_FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+_FFMPEG_OPTIONS = "-vn"
 
 
 class PlaybackCog(commands.Cog):
@@ -36,28 +39,26 @@ class PlaybackCog(commands.Cog):
         if not info:
             return
 
-        message_id = info.get("message_id")
-        channel_id = info.get("channel_id")
-        if message_id is None or channel_id is None:
-            state.guild_now_playing.pop(guild_id, None)
-            return
-
-        guild_obj = self.bot.get_guild(guild_id)
-        if not guild_obj:
-            state.guild_now_playing.pop(guild_id, None)
-            return
-
-        chan = guild_obj.get_channel(channel_id) or self.bot.get_channel(channel_id)
-        if not isinstance(chan, discord.TextChannel):
-            state.guild_now_playing.pop(guild_id, None)
-            return
-
-        try:
-            msg = await chan.fetch_message(message_id)
-            await msg.delete()
-        except Exception:
-            # If we can't delete it for any reason, just drop the tracking entry.
-            pass
+        msg = info.get("message_obj")
+        if msg is not None:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+        else:
+            # Fallback: no cached object, try fetching by ID.
+            message_id = info.get("message_id")
+            channel_id = info.get("channel_id")
+            if message_id is not None and channel_id is not None:
+                guild_obj = self.bot.get_guild(guild_id)
+                if guild_obj:
+                    chan = guild_obj.get_channel(channel_id) or self.bot.get_channel(channel_id)
+                    if isinstance(chan, discord.TextChannel):
+                        try:
+                            fetched = await chan.fetch_message(message_id)
+                            await fetched.delete()
+                        except Exception:
+                            pass
 
         state.guild_now_playing.pop(guild_id, None)
 
@@ -129,14 +130,11 @@ class PlaybackCog(commands.Cog):
         if voice.is_playing():
             voice.stop()
 
-        ffmpeg_before = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-        ffmpeg_options = "-vn"
-
         try:
             source = discord.FFmpegPCMAudio(
                 stream_url,
-                before_options=ffmpeg_before,
-                options=ffmpeg_options,
+                before_options=_FFMPEG_BEFORE,
+                options=_FFMPEG_OPTIONS,
             )
         except Exception as e:  # pragma: no cover
             print(f"Queue playback error creating source: {e}", file=sys.stderr)
@@ -206,20 +204,16 @@ class PlaybackCog(commands.Cog):
 
         # Nothing is playing; start immediately and wire up the queue callback.
         if not voice or not voice.is_connected():
-            if not ctx.author.voice or not ctx.author.voice.channel:
+            voice = await helpers.ensure_voice_connected(ctx.guild, ctx.author)
+            if not voice:
                 await ctx.send("You need to be in a voice channel to play music.")
                 return
-            channel = ctx.author.voice.channel
-            voice = await channel.connect()
-
-        ffmpeg_before = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-        ffmpeg_options = "-vn"
 
         try:
             source = discord.FFmpegPCMAudio(
                 stream_url,
-                before_options=ffmpeg_before,
-                options=ffmpeg_options,
+                before_options=_FFMPEG_BEFORE,
+                options=_FFMPEG_OPTIONS,
             )
         except Exception as e:  # pragma: no cover
             await ctx.send(f"Failed to create audio source: {e}")
@@ -433,21 +427,28 @@ class PlaybackCog(commands.Cog):
             if isinstance(chan, discord.TextChannel):
                 target_channel = chan
 
-        if message_id is not None and isinstance(target_channel, discord.abc.Messageable):
+        cached_msg = info.get("message_obj")
+        if cached_msg is not None:
             try:
-                # type: ignore[attr-defined] - TextChannel has fetch_message
-                msg = await target_channel.fetch_message(message_id)  # pragma: no cover
-                await msg.edit(embed=embed, view=view)
+                await cached_msg.edit(embed=embed, view=view)
                 return
             except Exception:
-                # If the message was deleted or can't be fetched, fall back to sending
-                # a fresh one and update the stored metadata.
+                # Cached object is stale (deleted, etc.) — fall through to send new.
+                pass
+        elif message_id is not None and isinstance(target_channel, discord.abc.Messageable):
+            try:
+                msg = await target_channel.fetch_message(message_id)
+                await msg.edit(embed=embed, view=view)
+                state.guild_now_playing[guild_id]["message_obj"] = msg
+                return
+            except Exception:
                 pass
 
         sent = await target_channel.send(embed=embed, view=view)
         # Persist the message metadata so we can edit next time.
         state.guild_now_playing[guild_id]["message_id"] = sent.id
         state.guild_now_playing[guild_id]["channel_id"] = sent.channel.id
+        state.guild_now_playing[guild_id]["message_obj"] = sent
 
 
     @tasks.loop(seconds=5)
@@ -479,15 +480,23 @@ class PlaybackCog(commands.Cog):
             if not guild_obj:
                 continue
 
-            chan = guild_obj.get_channel(channel_id) or self.bot.get_channel(channel_id)
-            if not isinstance(chan, discord.TextChannel):
+            # Skip guilds where the bot isn't actively playing.
+            voice: Optional[discord.VoiceClient] = guild_obj.voice_client  # type: ignore[assignment]
+            if not voice or not voice.is_connected() or not (voice.is_playing() or voice.is_paused()):
                 continue
 
-            try:
-                msg = await chan.fetch_message(message_id)  # pragma: no cover
-            except Exception:
-                # Message may have been deleted; stop tracking it.
-                continue
+            # Use cached message object; fall back to fetch if not available.
+            msg = info.get("message_obj")
+            if msg is None:
+                chan = guild_obj.get_channel(channel_id) or self.bot.get_channel(channel_id)
+                if not isinstance(chan, discord.TextChannel):
+                    continue
+                try:
+                    msg = await chan.fetch_message(message_id)
+                    info["message_obj"] = msg
+                except Exception:
+                    # Message may have been deleted; stop tracking it.
+                    continue
 
             # Build embed using the centralized function
             embed = build_player_embed(
@@ -505,6 +514,9 @@ class PlaybackCog(commands.Cog):
             try:
                 await msg.edit(embed=embed, view=view)
             except Exception:
+                # Edit failed — message may be deleted. Clear cached object
+                # so the next tick falls back to fetch (or discovers it's gone).
+                info.pop("message_obj", None)
                 continue
 
 
@@ -607,20 +619,12 @@ class PlaybackCog(commands.Cog):
     async def join_voice(self, ctx: commands.Context):
         """Join the voice channel the command author is in."""
 
-        if not ctx.author.voice or not ctx.author.voice.channel:
+        voice = await helpers.ensure_voice_connected(ctx.guild, ctx.author)
+        if not voice:
             await ctx.send("You need to be in a voice channel first.")
             return
 
-        channel = ctx.author.voice.channel
-        voice: Optional[discord.VoiceClient] = ctx.voice_client
-
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            await channel.connect()
-
-        await ctx.send(f"Joined voice channel: {channel.name}")
+        await ctx.send(f"Joined voice channel: {voice.channel.name}")
 
 
     @commands.command(name="leave")
@@ -628,8 +632,8 @@ class PlaybackCog(commands.Cog):
         """Disconnect from the current voice channel."""
 
         voice: Optional[discord.VoiceClient] = ctx.voice_client
-        disconnected = await _core.leave_voice_channel(
-            ctx.guild, voice, delete_np_callback=_delete_now_playing_message_after_delay,
+        disconnected = await helpers.leave_voice_channel(
+            ctx.guild, voice, delete_np_callback=self._delete_now_playing_message_after_delay,
         )
         if not disconnected:
             await ctx.send("I'm not connected to a voice channel.")
@@ -715,24 +719,13 @@ class PlaybackCog(commands.Cog):
             await helpers.send_temporary(ctx, "Song ID must be a number. Example: `!jw play 123`.", delay=5)
             return
 
-        channel = ctx.author.voice.channel
-        voice: Optional[discord.VoiceClient] = ctx.voice_client
-
-        # Connect or move the bot to the caller's channel
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            voice = await channel.connect()
+        voice = await helpers.ensure_voice_connected(ctx.guild, ctx.author)
 
         # First attempt: use the player endpoint helper to resolve a concrete
         # file path / stream URL for this song ID.
         async with ctx.typing():
-            api = helpers.create_api_client()
-            try:
-                player_result = api.play_juicewrld_song(song_id_int)
-            finally:
-                api.close()
+            api = helpers.get_api()
+            player_result = await api.play_juicewrld_song(song_id_int)
 
         status = player_result.get("status")
         error_detail = player_result.get("error")
@@ -755,11 +748,7 @@ class PlaybackCog(commands.Cog):
         # validate/stream its file path first.
         if not fallback_needed and file_path:
             async with ctx.typing():
-                api = helpers.create_api_client()
-                try:
-                    stream_result = api.stream_audio_file(file_path)
-                finally:
-                    api.close()
+                stream_result = await api.stream_audio_file(file_path)
 
             stream_status = stream_result.get("status")
             stream_error = stream_result.get("error")
@@ -788,100 +777,84 @@ class PlaybackCog(commands.Cog):
         # file browser (similar to !jw comp / _play_from_browse).
         if fallback_needed or not stream_url:
             async with ctx.typing():
-                api = helpers.create_api_client()
+                api = helpers.get_api()
                 try:
-                    try:
-                        song_obj = api.get_song(song_id_int)
-                    except NotFoundError:
+                    song_obj = await api.get_song(song_id_int)
+                except NotFoundError:
+                    await helpers.send_temporary(
+                        ctx,
+                        f"No song found with ID `{song_id_int}` in the main catalog.",
+                        delay=5,
+                    )
+                    return
+                except JuiceWRLDAPIError as e:
+                    await helpers.send_temporary(
+                        ctx,
+                        f"Error while fetching song `{song_id_int}` from catalog: {e}",
+                        delay=5,
+                    )
+                    return
+
+                # Prefer an explicit comp path from the song object if present.
+                comp_path = getattr(song_obj, "path", "") or None
+
+                if comp_path:
+                    file_path = comp_path
+                    stream_result = await api.stream_audio_file(file_path)
+                else:
+                    # No direct path on the song; search the comp browser by
+                    # song title under the Compilation tree.
+                    search_title = getattr(song_obj, "name", str(song_id_int))
+                    directory = await api.browse_files(path="Compilation", search=search_title)
+                    files = [
+                        item
+                        for item in getattr(directory, "items", [])
+                        if getattr(item, "type", "file") == "file"
+                    ]
+                    if not files:
                         await helpers.send_temporary(
                             ctx,
-                            f"No song found with ID `{song_id_int}` in the main catalog.",
-                            delay=5,
-                        )
-                        return
-                    except JuiceWRLDAPIError as e:
-                        await helpers.send_temporary(
-                            ctx,
-                            f"Error while fetching song `{song_id_int}` from catalog: {e}",
-                            delay=5,
-                        )
-                        return
-
-                    # Prefer an explicit comp path from the song object if present.
-                    comp_path = getattr(song_obj, "path", "") or None
-
-                    if comp_path:
-                        file_path = comp_path
-                        stream_result = api.stream_audio_file(file_path)
-                    else:
-                        # No direct path on the song; search the comp browser by
-                        # song title under the Compilation tree.
-                        search_title = getattr(song_obj, "name", str(song_id_int))
-                        directory = api.browse_files(path="Compilation", search=search_title)
-                        files = [
-                            item
-                            for item in getattr(directory, "items", [])
-                            if getattr(item, "type", "file") == "file"
-                        ]
-                        if not files:
-                            await helpers.send_temporary(
-                                ctx,
-                                f"Could not locate an audio file for song `{song_id_int}` "
-                                "via the comp browser.",
-                                delay=5,
-                            )
-                            return
-
-                        target = files[0]
-                        file_path = getattr(target, "path", None)
-                        if not file_path:
-                            await helpers.send_temporary(
-                                ctx,
-                                "Found a matching comp item but it has no valid file path.",
-                                delay=5,
-                            )
-                            return
-
-                        stream_result = api.stream_audio_file(file_path)
-
-                    stream_status = stream_result.get("status")
-                    stream_error = stream_result.get("error")
-
-                    if stream_status != "success":
-                        if stream_status == "file_not_found":
-                            await helpers.send_temporary(
-                                ctx,
-                                f"Audio file not found for song `{song_id_int}` (path `{file_path}`). ",
-                                delay=5,
-                            )
-                        elif stream_status == "http_error":
-                            await helpers.send_temporary(
-                                ctx,
-                                f"Could not stream song `{song_id_int}` (HTTP error). "
-                                f"Details: {stream_error or stream_status}",
-                                delay=5,
-                            )
-                        else:
-                            await helpers.send_temporary(
-                                ctx,
-                                f"Could not stream song `{song_id_int}` (status: {stream_status}).",
-                                delay=5,
-                            )
-                        return
-
-                    stream_url = stream_result.get("stream_url")
-                    if not stream_url:
-                        await helpers.send_temporary(
-                            ctx,
-                            f"API did not return a stream URL for song `{song_id_int}` (path `{file_path}`).",
+                            f"Could not locate an audio file for song `{song_id_int}` "
+                            "via the comp browser.",
                             delay=5,
                         )
                         return
 
-                    path_for_meta = file_path
-                    catalog_song_obj = song_obj
-                finally:
-                    api.close()
+                    target = files[0]
+                    file_path = getattr(target, "path", None)
+                    if not file_path:
+                        await helpers.send_temporary(
+                            ctx,
+                            "Found a matching comp item but it has no valid file path.",
+                            delay=5,
+                        )
+                        return
+
+                    stream_result = await api.stream_audio_file(file_path)
+
+                stream_status = stream_result.get("status")
+                stream_error = stream_result.get("error")
+
+                if stream_status != "success":
+                    await helpers.handle_stream_error(
+                        ctx,
+                        status=stream_status,
+                        error_detail=stream_error,
+                        subject=f"song `{song_id_int}`",
+                    )
+                    return
+
+                stream_url = stream_result.get("stream_url")
+                if not stream_url:
+                    await helpers.send_temporary(
+                        ctx,
+                        f"API did not return a stream URL for song `{song_id_int}` (path `{file_path}`).",
+                        delay=5,
+                    )
+                    return
+
+                path_for_meta = file_path
+                catalog_song_obj = song_obj
         else:
             # We already have a usable stream_url from the player endpoint path
             # or its direct URL. We'll still fetch catalog metadata below.
@@ -907,11 +880,7 @@ class PlaybackCog(commands.Cog):
             # Reuse the catalog song we fetched during fallback if available;
             # otherwise look it up now.
             if catalog_song_obj is None:
-                api = helpers.create_api_client()
-                try:
-                    catalog_song_obj = api.get_song(song_id_int)
-                finally:
-                    api.close()
+                catalog_song_obj = await helpers.get_api().get_song(song_id_int)
 
             song_obj = catalog_song_obj
 
@@ -957,55 +926,21 @@ class PlaybackCog(commands.Cog):
         # (radio is already disabled in _play_from_browse for search/comp
         # commands, so we don't toggle it here again.)
 
-        channel = ctx.author.voice.channel
-        voice: Optional[discord.VoiceClient] = ctx.voice_client
-
-        # Connect or move the bot to the caller's channel
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            voice = await channel.connect()
+        voice = await helpers.ensure_voice_connected(ctx.guild, ctx.author)
 
         async with ctx.typing():
-            api = helpers.create_api_client()
-            try:
-                result = api.stream_audio_file(file_path)
-            finally:
-                api.close()
+            result = await helpers.get_api().stream_audio_file(file_path)
 
         status = result.get("status")
         error_detail = result.get("error")
 
         if status != "success":
-            if status == "file_not_found":
-                await helpers.send_temporary(
-                    ctx,
-                    f"Audio file not found for path `{file_path}`. "
-                    "Double-check the path from the comp browser.",
-                    delay=5,
-                )
-            elif status == "http_error":
-                await helpers.send_temporary(
-                    ctx,
-                    f"Could not stream file `{file_path}` (HTTP error). "
-                    f"Details: {error_detail or status}",
-                    delay=5,
-                )
-            else:
-                if error_detail:
-                    await helpers.send_temporary(
-                        ctx,
-                        f"Could not stream file `{file_path}` (status: {status}). "
-                        f"Details: {error_detail}",
-                        delay=5,
-                    )
-                else:
-                    await helpers.send_temporary(
-                        ctx,
-                        f"Could not stream file `{file_path}` (status: {status}).",
-                        delay=5,
-                    )
+            await helpers.handle_stream_error(
+                ctx,
+                status=status,
+                error_detail=error_detail,
+                subject=f"file `{file_path}`",
+            )
             return
 
         stream_url = result.get("stream_url")
@@ -1129,75 +1064,42 @@ class PlaybackCog(commands.Cog):
                 "Radio mode disabled because you used a search/comp playback command.",
             )
 
-        channel = ctx.author.voice.channel
-        voice: Optional[discord.VoiceClient] = ctx.voice_client
-
-        # Connect or move the bot to the caller's channel
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            voice = await channel.connect()
+        voice = await helpers.ensure_voice_connected(ctx.guild, ctx.author)
 
         async with ctx.typing():
-            api = helpers.create_api_client()
-            try:
-                directory = api.browse_files(path=base_path, search=query)
-                files = [item for item in directory.items if getattr(item, "type", "file") == "file"]
-                if not files:
-                    await helpers.send_temporary(
-                        ctx,
-                        f"No files found matching `{query}` in {scope_description}.",
-                        delay=5,
-                    )
-                    return
+            api = helpers.get_api()
+            directory = await api.browse_files(path=base_path, search=query)
+            files = [item for item in directory.items if getattr(item, "type", "file") == "file"]
+            if not files:
+                await helpers.send_temporary(
+                    ctx,
+                    f"No files found matching `{query}` in {scope_description}.",
+                    delay=5,
+                )
+                return
 
-                target = files[0]
-                file_path = getattr(target, "path", None)
-                if not file_path:
-                    await helpers.send_temporary(
-                        ctx,
-                        "Found a matching item but it does not have a valid file path.",
-                        delay=5,
-                    )
-                    return
+            target = files[0]
+            file_path = getattr(target, "path", None)
+            if not file_path:
+                await helpers.send_temporary(
+                    ctx,
+                    "Found a matching item but it does not have a valid file path.",
+                    delay=5,
+                )
+                return
 
-                result = api.stream_audio_file(file_path)
-            finally:
-                api.close()
+            result = await api.stream_audio_file(file_path)
 
         status = result.get("status")
         error_detail = result.get("error")
 
         if status != "success":
-            if status == "file_not_found":
-                await helpers.send_temporary(
-                    ctx,
-                    f"Audio file not found for search `{query}` (resolved path `{file_path}`). "
-                    "Double-check in the comp browser.",
-                    delay=5,
-                )
-            elif status == "http_error":
-                await helpers.send_temporary(
-                    ctx,
-                    f"Could not stream file for `{query}` (HTTP error). "
-                    f"Details: {error_detail or status}",
-                    delay=5,
-                )
-            else:
-                if error_detail:
-                    await helpers.send_temporary(
-                        ctx,
-                        f"Could not stream file for `{query}` (status: {status}). "
-                        f"Details: {error_detail}",
-                        delay=5,
-                    )
-                else:
-                    await helpers.send_temporary(
-                        ctx,
-                        f"Could not stream file for `{query}` (status: {status}).",
-                        delay=5,
-                    )
+            await helpers.handle_stream_error(
+                ctx,
+                status=status,
+                error_detail=error_detail,
+                subject=f"search `{query}` (path `{file_path}`)",
+            )
             return
 
         stream_url = result.get("stream_url")
@@ -1223,8 +1125,7 @@ class PlaybackCog(commands.Cog):
         song_meta: Dict[str, Any] = {"length": None}
         duration_seconds: Optional[int] = None
         try:
-            api = helpers.create_api_client()
-            search_data = api.get_songs(search=base_title, page=1, page_size=1)
+            search_data = await helpers.get_api().get_songs(search=base_title, page=1, page_size=1)
             results = search_data.get("results") or []
             if results:
                 song_obj = results[0]
@@ -1262,10 +1163,10 @@ class PlaybackCog(commands.Cog):
     
         Returns None if fetching fails.
         """
-        api = helpers.create_api_client()
+        api = helpers.get_api()
         try:
             # 1) Get a random radio song with metadata from /radio/random/.
-            radio_data = api.get_random_radio_song()
+            radio_data = await api.get_random_radio_song()
             chosen_title = str(radio_data.get("title") or "Unknown")
 
             # According to docs, `path` and `id` are both the comp file path.
@@ -1286,7 +1187,7 @@ class PlaybackCog(commands.Cog):
             stream_url = None
             if include_stream_url:
                 # 2) Use the comp streaming helper to validate and build a stream URL.
-                stream_result = api.stream_audio_file(file_path)
+                stream_result = await api.stream_audio_file(file_path)
                 status = stream_result.get("status")
                 if status != "success":
                     return None
@@ -1314,24 +1215,21 @@ class PlaybackCog(commands.Cog):
                 "duration_seconds": duration_seconds,
                 "path": file_path,
             }
-        except Exception:
+        except Exception as e:
+            print(f"Radio: failed to fetch random song: {e}", file=sys.stderr)
             return None
-        finally:
-            api.close()
 
 
     async def _get_fresh_stream_url(self, file_path: str) -> Optional[str]:
         """Get a fresh stream URL for a file path."""
-        api = helpers.create_api_client()
         try:
-            stream_result = api.stream_audio_file(file_path)
+            stream_result = await helpers.get_api().stream_audio_file(file_path)
             if stream_result.get("status") == "success":
                 return stream_result.get("stream_url")
             return None
-        except Exception:
+        except Exception as e:
+            print(f"Radio: failed to get stream URL for {file_path}: {e}", file=sys.stderr)
             return None
-        finally:
-            api.close()
 
 
     async def _prefetch_next_radio_song(self, guild_id: int) -> None:
@@ -1365,15 +1263,7 @@ class PlaybackCog(commands.Cog):
             await helpers.send_temporary(ctx, "You need to be in a voice channel to use radio.", delay=5)
             return
 
-        channel = ctx.author.voice.channel
-        voice: Optional[discord.VoiceClient] = ctx.voice_client
-
-        # Connect or move the bot to the caller's channel
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            voice = await channel.connect()
+        voice = await helpers.ensure_voice_connected(ctx.guild, ctx.author)
 
         # Check for pre-fetched song first
         prefetched = state.guild_radio_next.pop(guild_id, None)
@@ -1433,14 +1323,11 @@ class PlaybackCog(commands.Cog):
             # call _play_random_song_in_guild once the current track ends.
             return
 
-        ffmpeg_before = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-        ffmpeg_options = "-vn"
-
         try:
             source = discord.FFmpegPCMAudio(
                 stream_url,
-                before_options=ffmpeg_before,
-                options=ffmpeg_options,
+                before_options=_FFMPEG_BEFORE,
+                options=_FFMPEG_OPTIONS,
             )
         except Exception as e:  # pragma: no cover
             await helpers.send_temporary(

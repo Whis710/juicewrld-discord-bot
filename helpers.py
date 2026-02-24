@@ -10,19 +10,53 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+import aiohttp
 import discord
 from discord.ext import commands
 
 from client import JuiceWRLDAPI
 from constants import JUICEWRLD_API_BASE_URL, NOTHING_PLAYING
+from exceptions import JuiceWRLDAPIError
 import state
 
 
-# ── API client factory ───────────────────────────────────────────────
+# ── Singleton API client ─────────────────────────────────────────────
 
-def create_api_client() -> JuiceWRLDAPI:
-    """Create a new JuiceWRLDAPI client instance."""
-    return JuiceWRLDAPI(base_url=JUICEWRLD_API_BASE_URL)
+_api_client: Optional[JuiceWRLDAPI] = None
+
+
+def get_api() -> JuiceWRLDAPI:
+    """Return the shared async API client (created on first call)."""
+    global _api_client
+    if _api_client is None:
+        _api_client = JuiceWRLDAPI(base_url=JUICEWRLD_API_BASE_URL)
+    return _api_client
+
+
+# ── Shared Discord REST session ──────────────────────────────────────
+
+_discord_session: Optional[aiohttp.ClientSession] = None
+
+
+async def get_discord_session() -> aiohttp.ClientSession:
+    """Return a shared aiohttp session for Discord REST API calls."""
+    global _discord_session
+    if _discord_session is None or _discord_session.closed:
+        _discord_session = aiohttp.ClientSession()
+    return _discord_session
+
+
+# ── Cleanup ──────────────────────────────────────────────────────────
+
+async def close_all() -> None:
+    """Close all shared sessions (call during bot shutdown)."""
+    global _api_client, _discord_session
+    if _api_client is not None:
+        await _api_client.close()
+        _api_client = None
+    if _discord_session is not None and not _discord_session.closed:
+        await _discord_session.close()
+        _discord_session = None
 
 
 # ── Parsing / formatting helpers ─────────────────────────────────────
@@ -128,6 +162,162 @@ def build_song_metadata_from_song(
         "snippets": getattr(song_obj, "snippets", None),
     }
     return meta
+
+
+# ── Voice connection helper ───────────────────────────────────────────
+
+async def ensure_voice_connected(
+    guild: discord.Guild,
+    user: discord.Member,
+) -> Optional[discord.VoiceClient]:
+    """Connect or move to the user's voice channel.
+
+    Returns the :class:`discord.VoiceClient` on success, or ``None`` if
+    the user is not currently in a voice channel.
+    """
+    if not user.voice or not user.voice.channel:
+        return None
+    channel = user.voice.channel
+    voice: Optional[discord.VoiceClient] = guild.voice_client  # type: ignore[assignment]
+    if voice and voice.is_connected():
+        if voice.channel != channel:
+            await voice.move_to(channel)
+        return voice
+    return await channel.connect()
+
+
+# ── Stream error helper ───────────────────────────────────────────────
+
+async def handle_stream_error(
+    ctx: commands.Context,
+    *,
+    status: str,
+    error_detail: Optional[str],
+    subject: str,
+) -> None:
+    """Send the appropriate error message for a failed stream attempt.
+
+    *subject* is interpolated into the message, e.g.
+    ``"song `123`"`` or ``"file `path/to/song.mp3`"``.
+    """
+    if status == "file_not_found":
+        await send_temporary(ctx, f"Audio file not found for {subject}.", delay=5)
+    elif status == "http_error":
+        await send_temporary(
+            ctx,
+            f"Could not stream {subject} (HTTP error). "
+            f"Details: {error_detail or status}",
+            delay=5,
+        )
+    else:
+        detail_suffix = f" Details: {error_detail}" if error_detail else ""
+        await send_temporary(
+            ctx,
+            f"Could not stream {subject} (status: {status}).{detail_suffix}",
+            delay=5,
+        )
+
+
+# ── Similar songs ────────────────────────────────────────────────────
+
+def score_similarity(
+    song: Any,
+    *,
+    era_name: Optional[str],
+    producers_str: str,
+    category: str,
+) -> int:
+    """Score a candidate song's similarity to a reference track."""
+    sc = 0
+    s_era = getattr(getattr(song, "era", None), "name", "")
+    if era_name and s_era == era_name:
+        sc += 2
+    s_prod = getattr(song, "producers", "") or ""
+    if producers_str and s_prod and any(
+        p.strip() in s_prod for p in producers_str.split(",") if p.strip()
+    ):
+        sc += 3
+    if category and getattr(song, "category", "") == category:
+        sc += 1
+    return sc
+
+
+async def find_similar_songs(
+    guild_id: int,
+) -> tuple:
+    """Find songs similar to the currently-playing track.
+
+    Returns ``(current_title, sorted_candidates)`` or ``(None, [])``
+    if nothing is playing.
+    """
+    info = state.guild_now_playing.get(guild_id)
+    title = info.get("title") if info else None
+    if not info or not title or title == NOTHING_PLAYING:
+        return None, []
+
+    meta = info.get("metadata") or {}
+    era_val = meta.get("era")
+    era_name: Optional[str] = None
+    if isinstance(era_val, dict):
+        era_name = era_val.get("name")
+    elif era_val:
+        era_name = str(era_val)
+
+    producers_str = meta.get("producers") or ""
+    category = meta.get("category") or ""
+
+    candidates: List[Any] = []
+    api = get_api()
+    try:
+        if era_name:
+            res = await api.get_songs(era=era_name, page=1, page_size=25)
+            candidates = res.get("results") or []
+        if len(candidates) < 5 and category:
+            res2 = await api.get_songs(category=category, page=1, page_size=25)
+            existing_ids = {getattr(s, "id", None) for s in candidates}
+            for s in (res2.get("results") or []):
+                if getattr(s, "id", None) not in existing_ids:
+                    candidates.append(s)
+    except JuiceWRLDAPIError:
+        return title, []
+
+    candidates = [s for s in candidates if getattr(s, "name", None) != title]
+    candidates.sort(
+        key=lambda s: score_similarity(
+            s,
+            era_name=era_name,
+            producers_str=producers_str,
+            category=category,
+        ),
+        reverse=True,
+    )
+    return title, candidates[:10]
+
+
+# ── Leave voice ─────────────────────────────────────────────────────
+
+async def leave_voice_channel(
+    guild: Optional[discord.Guild],
+    voice: Optional[discord.VoiceClient],
+    *,
+    delete_np_callback,
+) -> bool:
+    """Disconnect from voice and clean up state.
+
+    Returns ``True`` if the bot was connected and disconnected.
+    *delete_np_callback* should be an async callable that accepts
+    ``(guild_id, delay)`` and deletes the Now Playing message.
+    """
+    if not voice or not voice.is_connected():
+        return False
+
+    if guild:
+        state.guild_radio_enabled[guild.id] = False
+        state.guild_radio_next.pop(guild.id, None)
+        asyncio.create_task(delete_np_callback(guild.id, 1))
+
+    await voice.disconnect()
+    return True
 
 
 # ── Discord message helpers ──────────────────────────────────────────

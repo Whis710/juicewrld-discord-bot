@@ -20,4 +20,5 @@ BOT_VERSION = "3.0.0"
 BOT_BUILD_DATE = "2026-02-24"
 
 # Environment
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 JUICEWRLD_API_BASE_URL = os.getenv("JUICEWRLD_API_BASE_URL", "https://juicewrldapi.com")

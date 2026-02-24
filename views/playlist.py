@@ -375,15 +375,7 @@ class PlaylistPaginationView(discord.ui.View):
         if self.ctx.guild:
             state.guild_radio_enabled[self.ctx.guild.id] = False
 
-        channel = user.voice.channel
-        voice: Optional[discord.VoiceClient] = self.ctx.voice_client
-
-        # Connect or move the bot to the caller's channel
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            voice = await channel.connect()
+        voice = await helpers.ensure_voice_connected(self.ctx.guild, user)
 
         queued = 0
         errors = 0
@@ -393,11 +385,7 @@ class PlaylistPaginationView(discord.ui.View):
                 continue
 
             try:
-                api = helpers.create_api_client()
-                try:
-                    result = api.stream_audio_file(file_path)
-                finally:
-                    api.close()
+                result = await helpers.get_api().stream_audio_file(file_path)
 
                 if result.get("status") != "success":
                     errors += 1
@@ -670,11 +658,7 @@ class PlaylistPaginationView(discord.ui.View):
 
         try:
             # Use the API to create a ZIP file
-            api = helpers.create_api_client()
-            try:
-                zip_content = api.create_zip(file_paths)
-            finally:
-                api.close()
+            zip_content = await helpers.get_api().create_zip(file_paths)
 
             # Send the ZIP file to the user
             zip_file = discord.File(
@@ -886,15 +870,7 @@ class SharedPlaylistView(discord.ui.View):
         if self.ctx.guild:
             state.guild_radio_enabled[self.ctx.guild.id] = False
 
-        channel = user.voice.channel
-        voice: Optional[discord.VoiceClient] = self.ctx.voice_client
-
-        # Connect or move the bot to the caller's channel
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            voice = await channel.connect()
+        voice = await helpers.ensure_voice_connected(self.ctx.guild, user)
 
         queued = 0
         for track in self.tracks:
@@ -902,11 +878,7 @@ class SharedPlaylistView(discord.ui.View):
             if not file_path:
                 continue
 
-            api = helpers.create_api_client()
-            try:
-                result = api.stream_audio_file(file_path)
-            finally:
-                api.close()
+            result = await helpers.get_api().stream_audio_file(file_path)
 
             if result.get("status") != "success":
                 continue
@@ -1019,11 +991,7 @@ class SharedPlaylistView(discord.ui.View):
         )
 
         try:
-            api = helpers.create_api_client()
-            try:
-                zip_content = api.create_zip(file_paths)
-            finally:
-                api.close()
+            zip_content = await helpers.get_api().create_zip(file_paths)
 
             zip_file = discord.File(
                 io.BytesIO(zip_content),

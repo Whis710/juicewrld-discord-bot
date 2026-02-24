@@ -3,6 +3,9 @@
 from typing import Any, Callable, Dict, Optional
 
 import discord
+from discord.ext import commands
+
+import helpers
 
 class SongOfTheDayView(discord.ui.View):
     """View with a Play button for the Song of the Day embed."""
@@ -38,13 +41,7 @@ class SongOfTheDayView(discord.ui.View):
         if not guild:
             return
 
-        channel = user.voice.channel
-        voice: Optional[discord.VoiceClient] = guild.voice_client  # type: ignore[assignment]
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            voice = await channel.connect()
+        voice = await helpers.ensure_voice_connected(guild, user)
 
         file_path = self.song_data.get("path")
         if not file_path:
@@ -56,9 +53,8 @@ class SongOfTheDayView(discord.ui.View):
             await interaction.followup.send("Could not get a stream URL for this song.", ephemeral=True)
             return
 
-        # Build a fake ctx from the interaction so queue_or_play_now works.
-        ctx = await interaction.client.get_context(await interaction.channel.fetch_message(interaction.message.id))
-        ctx.author = user  # type: ignore[assignment]
+        # Build a lightweight ctx from the interaction for queue_or_play_now.
+        ctx = await commands.Context.from_interaction(interaction)
 
         title = self.song_data.get("title", "Unknown")
         metadata = self.song_data.get("metadata", {})

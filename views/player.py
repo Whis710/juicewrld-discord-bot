@@ -235,11 +235,7 @@ class PlayerView(discord.ui.View):
             return
 
         # Get stream URL for the previous song
-        api = helpers.create_api_client()
-        try:
-            stream_result = api.stream_audio_file(path)
-        finally:
-            api.close()
+        stream_result = await helpers.get_api().stream_audio_file(path)
 
         if stream_result.get("status") != "success":
             await helpers.send_ephemeral_temporary(
