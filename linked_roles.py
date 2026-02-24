@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 DISCORD_API = "https://discord.com/api/v10"
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "")
+DISCORD_CLIENT_ID = os.getenv("CLIENT_ID", "")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
 LINKED_ROLES_URL = os.getenv("LINKED_ROLES_URL", "http://localhost:8080")
 LINKED_ROLES_PORT = int(os.getenv("LINKED_ROLES_PORT", "8080"))

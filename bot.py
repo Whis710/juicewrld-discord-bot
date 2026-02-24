@@ -7072,7 +7072,7 @@ async def _emoji_delete(ctx: commands.Context, app_id: int, name: str) -> None:
 
 async def _start_linked_roles_server() -> None:
     """Start the linked roles FastAPI server if credentials are configured."""
-    client_id = os.getenv("DISCORD_CLIENT_ID", "")
+    client_id = os.getenv("CLIENT_ID", "")
     client_secret = os.getenv("DISCORD_CLIENT_SECRET", "")
     if not client_id or not client_secret:
         print("[linked_roles] DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET not set — skipping.")
