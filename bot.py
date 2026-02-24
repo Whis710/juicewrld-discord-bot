@@ -55,6 +55,13 @@ _guild_previous_song: Dict[int, Dict[str, Any]] = {}
 # Per-guild pre-fetched next radio song (for showing "Up Next" in radio mode)
 _guild_radio_next: Dict[int, Dict[str, Any]] = {}
 
+# Per-guild timestamp of last voice activity (play, queue, radio, etc.)
+# Used by the idle auto-leave task.
+_guild_last_activity: Dict[int, float] = {}
+
+# How long (seconds) of no playback before auto-leaving voice.
+AUTO_LEAVE_IDLE_SECONDS = 30 * 60  # 30 minutes
+
 # Per-user playlists:
 # For now this is kept in memory only; a default "Likes" playlist is used
 # by the Now Playing "Like" button.
@@ -536,6 +543,11 @@ def _build_playlists_embed_for_user(user: discord.abc.User, playlists: Dict[str,
     return embed
 
 
+def _touch_activity(guild_id: int) -> None:
+    """Update the last-activity timestamp for a guild."""
+    _guild_last_activity[guild_id] = time.time()
+
+
 def _set_now_playing(
     ctx: commands.Context,
     *,
@@ -580,6 +592,9 @@ def _set_now_playing(
         }
     )
     _guild_now_playing[guild_id] = existing
+
+    # Mark activity so the idle auto-leave timer resets.
+    _touch_activity(guild_id)
 
 
 class SingleSongResultView(discord.ui.View):
@@ -3793,12 +3808,105 @@ async def _update_player_messages() -> None:
             continue
 
 
+async def _auto_disconnect_guild(guild: discord.Guild, reason: str = "inactivity") -> None:
+    """Cleanly disconnect the bot from voice in a guild and reset state."""
+
+    guild_id = guild.id
+    _guild_radio_enabled[guild_id] = False
+    _guild_radio_next.pop(guild_id, None)
+    _guild_last_activity.pop(guild_id, None)
+
+    voice: Optional[discord.VoiceClient] = guild.voice_client  # type: ignore[assignment]
+    if voice and voice.is_connected():
+        if voice.is_playing() or voice.is_paused():
+            voice.stop()
+        await voice.disconnect()
+
+    # Delete the Now Playing message after a brief moment.
+    asyncio.create_task(_delete_now_playing_message_after_delay(guild_id, 1))
+
+    # Try to notify a text channel.
+    info = _guild_now_playing.get(guild_id)
+    channel_id = info.get("channel_id") if info else None
+    if channel_id:
+        chan = guild.get_channel(channel_id) or bot.get_channel(channel_id)
+        if isinstance(chan, discord.TextChannel):
+            try:
+                msg = await chan.send(f"Disconnected due to {reason}.")
+                asyncio.create_task(_delete_later(msg, 10))
+            except Exception:
+                pass
+
+
+@tasks.loop(seconds=60)
+async def _idle_auto_leave() -> None:
+    """Periodically check for guilds where the bot is idle and auto-leave."""
+
+    now = time.time()
+    for guild in list(bot.guilds):
+        voice: Optional[discord.VoiceClient] = guild.voice_client  # type: ignore[assignment]
+        if not voice or not voice.is_connected():
+            continue
+
+        # If actively playing, refresh the timestamp and skip.
+        if voice.is_playing():
+            _touch_activity(guild.id)
+            continue
+
+        last = _guild_last_activity.get(guild.id)
+        if last is None:
+            # First time we're checking — initialise and give it a full window.
+            _touch_activity(guild.id)
+            continue
+
+        if now - last >= AUTO_LEAVE_IDLE_SECONDS:
+            await _auto_disconnect_guild(guild, reason="30 minutes of inactivity")
+
+
+@_idle_auto_leave.before_loop
+async def _before_idle_auto_leave() -> None:
+    await bot.wait_until_ready()
+
+
+@bot.event
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState,
+) -> None:
+    """Auto-leave when the bot is the only member left in a voice channel."""
+
+    # We only care about users leaving a channel (not the bot itself).
+    if member.bot:
+        return
+
+    # A user left or moved away from a channel.
+    if before.channel is None:
+        return
+
+    guild = member.guild
+    voice: Optional[discord.VoiceClient] = guild.voice_client  # type: ignore[assignment]
+    if not voice or not voice.is_connected():
+        return
+
+    # Check if the channel the user left is the one the bot is in.
+    if voice.channel != before.channel:
+        return
+
+    # Count non-bot members remaining.
+    human_members = [m for m in voice.channel.members if not m.bot]
+    if len(human_members) == 0:
+        await _auto_disconnect_guild(guild, reason="everyone left the voice channel")
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("------")
     if not _update_player_messages.is_running():
         _update_player_messages.start()
+    if not _idle_auto_leave.is_running():
+        _idle_auto_leave.start()
 
     # Clear and sync application (slash) commands
     try:
@@ -3966,7 +4074,7 @@ async def sync_commands(ctx: commands.Context):
 
 
 # Bot version info
-BOT_VERSION = "1.6.0"
+BOT_VERSION = "1.7.0"
 BOT_BUILD_DATE = "2026-02-24"
 
 
@@ -3982,6 +4090,8 @@ async def version_command(ctx: commands.Context):
     embed.add_field(
         name="Recent Updates",
         value=(
+            "• Auto-leave after 30 min of inactivity\n"
+            "• Auto-leave when everyone leaves the voice channel\n"
             "• Radio now lets current song finish before starting\n"
             "• `/jw play` with autocomplete search\n"
             "• `/jw search` with autocomplete\n"
