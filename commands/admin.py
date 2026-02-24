@@ -287,15 +287,6 @@ class AdminCog(commands.Cog):
         await helpers.send_temporary(ctx, f"Song of the Day will be posted daily in {channel.mention}.")
 
 
-    @commands.command(name="stats")
-    async def listening_stats(self, ctx: commands.Context):
-        """Show the user's personal listening stats."""
-
-        embed = helpers.build_stats_embed(ctx.author)
-        await helpers.send_temporary(ctx, embed=embed, delay=30)
-
-
-
     async def context_view_stats(self, interaction: discord.Interaction, user: discord.Member) -> None:
         """Right-click a user to view their listening stats."""
         embed = helpers.build_stats_embed(user)
