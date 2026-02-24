@@ -17,10 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import discord
 from discord.ext import commands
 
+from constants import DISCORD_TOKEN
 import helpers
 import state
-
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 # ── Bot instance ──────────────────────────────────────────────────────
 
@@ -46,17 +45,8 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("------")
 
-    # Sync slash commands.
-    try:
-        bot.tree.clear_commands(guild=None)
-        for guild in bot.guilds:
-            bot.tree.clear_commands(guild=guild)
-        for guild in bot.guilds:
-            await bot.tree.sync(guild=guild)
-        await bot.tree.sync()
-        print("Cleared and synced application commands.")
-    except Exception as e:
-        print(f"Failed to sync application commands: {e}", file=sys.stderr)
+    # Slash commands are synced manually via `!jw sync` to avoid
+    # hitting Discord rate limits on every restart.
 
     # Start linked roles web server (if configured).
     await _start_linked_roles_server()
@@ -139,6 +129,7 @@ async def _start_linked_roles_server() -> None:
 
 async def _load_extensions() -> None:
     """Load all Cog extensions."""
+    state.load_all()
     for ext in EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -155,7 +146,10 @@ def main() -> None:
     async def _runner():
         async with bot:
             await _load_extensions()
-            await bot.start(DISCORD_TOKEN)
+            try:
+                await bot.start(DISCORD_TOKEN)
+            finally:
+                await helpers.close_all()
 
     asyncio.run(_runner())
 

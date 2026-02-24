@@ -246,7 +246,7 @@ class SingleSongResultView(discord.ui.View):
             return
         
         # Load user's playlists
-        user_playlists = state.get_or_createstate.user_playlists(interaction.user.id)
+        user_playlists = state.get_or_create_user_playlists(interaction.user.id)
         self.playlist_items = list(user_playlists.items())
         self.current_page = 0
         self.mode = "select_playlist"
@@ -346,7 +346,7 @@ class SingleSongResultView(discord.ui.View):
             "added_at": time.time(),
         })
         
-        state.savestate.user_playlists_to_disk()
+        state.save_user_playlists_to_disk()
         
         # Show success message and close
         await interaction.response.send_message(
@@ -401,7 +401,7 @@ class SingleSongPlaylistCreateModal(discord.ui.Modal, title="Create New Playlist
             return
         
         user = interaction.user
-        playlists = state.get_or_createstate.user_playlists(user.id)
+        playlists = state.get_or_create_user_playlists(user.id)
         
         if name in playlists:
             await interaction.response.send_message(
@@ -425,7 +425,7 @@ class SingleSongPlaylistCreateModal(discord.ui.Modal, title="Create New Playlist
             "added_at": time.time(),
         })
         
-        state.savestate.user_playlists_to_disk()
+        state.save_user_playlists_to_disk()
         
         await interaction.response.send_message(
             f"Added `{song_name}` to `{name}` playlist.",
@@ -783,7 +783,7 @@ class SearchPaginationView(discord.ui.View):
             return
 
         # Load user's playlists
-        user_playlists = state.get_or_createstate.user_playlists(interaction.user.id)
+        user_playlists = state.get_or_create_user_playlists(interaction.user.id)
         self.playlist_items = list(user_playlists.items())
         self.playlist_page = 0
         
@@ -872,7 +872,7 @@ class SearchPaginationView(discord.ui.View):
             "added_at": time.time(),
         })
         
-        state.savestate.user_playlists_to_disk()
+        state.save_user_playlists_to_disk()
         
         # Return to song selected mode and update the search view
         self.mode = "song_selected"

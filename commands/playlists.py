@@ -22,45 +22,13 @@ class PlaylistsCog(commands.Cog):
         """Lazy reference to the PlaybackCog."""
         return self.bot.get_cog("PlaybackCog")
 
-    @commands.command(name="playlists")
-    async def list_playlists(self, ctx: commands.Context):
-        """List the invoking user's playlists with a short preview."""
-
-        user = ctx.author
-        playlists = state.user_playlists.get(user.id) or {}
-        if not playlists:
-            await ctx.send(
-                "You don't have any playlists yet. Use ❤ Like on the player to add "
-                "the current song to your Likes playlist."
-            )
-            return
-
-        embed = helpers.build_playlists_embed_for_user(user, playlists)
-        await ctx.send(embed=embed)
-
-
-    @commands.group(name="playlist", invoke_without_command=True)
+    @commands.group(name="playlist", aliases=["pl", "playlists"], invoke_without_command=True)
     async def playlist_group(self, ctx: commands.Context):
-        """Playlist subcommands: show, play, add, delete, rename, remove."""
+        """List playlists (bare invocation) or run a subcommand.
 
-        usage = (
-            "**Playlist commands:**\n"\
-            "`!jw playlists` - List your playlists.\n"\
-            "`!jw playlist show <name>` - Show full contents of one playlist.\n"\
-            "`!jw playlist play <name>` - Queue/play all tracks in a playlist.\n"\
-            "`!jw playlist add <name> <song_id>` - Add a song (by ID) to a playlist.\n"\
-            "`!jw playlist delete <name>` - Delete one of your playlists.\n"\
-            "`!jw playlist rename <old> <new>` - Rename one of your playlists.\n"\
-            "`!jw playlist remove <name> <index>` - Remove a track (1-based index)."
-        )
-        await ctx.send(usage)
+        Works with any of: !jw playlist, !jw pl, !jw playlists
+        """
 
-
-    @commands.group(name="pl", invoke_without_command=True)
-    async def pl_group(self, ctx: commands.Context):
-        """Short playlist aliases using !jw pl."""
-
-        # Default: behave like !jw playlists (list playlists).
         user = ctx.author
         playlists = state.user_playlists.get(user.id) or {}
         if not playlists:
@@ -72,36 +40,6 @@ class PlaylistsCog(commands.Cog):
 
         embed = helpers.build_playlists_embed_for_user(user, playlists)
         await ctx.send(embed=embed)
-
-
-    @pl_group.command(name="show")
-    async def pl_show(self, ctx: commands.Context, *, name: str):
-        await self.playlist_show(ctx, name=name)
-
-
-    @pl_group.command(name="play")
-    async def pl_play(self, ctx: commands.Context, *, name: str):
-        await self.playlist_play(ctx, name=name)
-
-
-    @pl_group.command(name="add")
-    async def pl_add(self, ctx: commands.Context, *, name_and_id: str):
-        await self.playlist_add(ctx, name_and_id=name_and_id)
-
-
-    @pl_group.command(name="delete")
-    async def pl_delete(self, ctx: commands.Context, *, name: str):
-        await self.playlist_delete(ctx, name=name)
-
-
-    @pl_group.command(name="rename")
-    async def pl_rename(self, ctx: commands.Context, old: str, new: str):
-        await self.playlist_rename(ctx, old=old, new=new)
-
-
-    @pl_group.command(name="remove")
-    async def pl_remove(self, ctx: commands.Context, name: str, index: int):
-        await self.playlist_remove(ctx, name=name, index=index)
 
 
     @playlist_group.command(name="show")
@@ -118,24 +56,38 @@ class PlaylistsCog(commands.Cog):
             await ctx.send(f"Playlist `{name}` is empty.")
             return
 
-        lines = [f"Tracks in **{name}**:"]
-        for idx, track in enumerate(playlist, start=1):
-            tname = track.get("name") or track.get("id") or "Unknown"
-            tid = track.get("id")
-            path = track.get("path")
-            piece = f"{idx}. {tname}"
-            if tid is not None:
-                piece += f" (ID: {tid})"
-            if path:
-                piece += f" – `{path}`"
-            lines.append(piece)
+        # Paginate into embeds (20 tracks per page) to avoid truncation.
+        per_page = 20
+        total = len(playlist)
+        pages: list[discord.Embed] = []
+        for start in range(0, total, per_page):
+            page_tracks = playlist[start : start + per_page]
+            lines: list[str] = []
+            for idx, track in enumerate(page_tracks, start=start + 1):
+                tname = track.get("name") or track.get("id") or "Unknown"
+                tid = track.get("id")
+                piece = f"`{idx}.` {tname}"
+                if tid is not None:
+                    piece += f" (ID: {tid})"
+                lines.append(piece)
 
-        # Discord message limit is large; truncate defensively.
-        text = "\n".join(lines)
-        if len(text) > 1900:
-            text = text[:1900] + "\n... (truncated)"
+            page_num = start // per_page + 1
+            total_pages = -(-total // per_page)  # ceil division
+            footer = f"Page {page_num}/{total_pages} • {total} track(s)" if total_pages > 1 else f"{total} track(s)"
 
-        await ctx.send(text)
+            embed = discord.Embed(
+                title=f"Playlist: {name}",
+                description="\n".join(lines),
+            )
+            embed.set_footer(text=footer)
+            pages.append(embed)
+
+        if len(pages) == 1:
+            await ctx.send(embed=pages[0])
+        else:
+            # Send all pages; Discord handles multiple embeds fine for prefix commands.
+            for embed in pages:
+                await ctx.send(embed=embed)
 
 
     @playlist_group.command(name="play")
@@ -160,15 +112,7 @@ class PlaylistsCog(commands.Cog):
         # Disable radio if it is on for this guild so playlist has priority.
         self._playback._disable_radio_if_active(ctx)
 
-        channel = ctx.author.voice.channel
-        voice: Optional[discord.VoiceClient] = ctx.voice_client
-
-        # Connect or move the bot to the caller's channel
-        if voice and voice.is_connected():
-            if voice.channel != channel:
-                await voice.move_to(channel)
-        else:
-            voice = await channel.connect()
+        voice = await helpers.ensure_voice_connected(ctx.guild, ctx.author)
 
         if not voice:
             await ctx.send("Internal error: voice client not available.")
@@ -180,11 +124,7 @@ class PlaylistsCog(commands.Cog):
             if not file_path:
                 continue
 
-            api = helpers.create_api_client()
-            try:
-                result = api.stream_audio_file(file_path)
-            finally:
-                api.close()
+            result = await helpers.get_api().stream_audio_file(file_path)
 
             status = result.get("status")
             if status != "success":
@@ -249,11 +189,7 @@ class PlaylistsCog(commands.Cog):
 
         # Resolve a comp file path for this song using the player endpoint.
         async with ctx.typing():
-            api = helpers.create_api_client()
-            try:
-                player_result = api.play_juicewrld_song(song_id_int)
-            finally:
-                api.close()
+            player_result = await helpers.get_api().play_juicewrld_song(song_id_int)
 
         status = player_result.get("status")
         error_detail = player_result.get("error")
@@ -288,13 +224,10 @@ class PlaylistsCog(commands.Cog):
 
         # Fetch full song metadata for display and future playback.
         async with ctx.typing():
-            api = helpers.create_api_client()
             try:
-                song_obj = api.get_song(song_id_int)
+                song_obj = await helpers.get_api().get_song(song_id_int)
             except Exception:
                 song_obj = None
-            finally:
-                api.close()
 
         if song_obj is not None:
             image_url = helpers.normalize_image_url(getattr(song_obj, "image_url", None))

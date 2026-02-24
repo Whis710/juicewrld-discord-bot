@@ -9,7 +9,6 @@ from discord.ext import commands
 from exceptions import JuiceWRLDAPIError, NotFoundError
 import helpers
 import state
-from commands import core as _core
 from views.search import SearchPaginationView, SingleSongResultView
 from views.playlist import PlaylistPaginationView
 
@@ -20,11 +19,7 @@ async def era_autocomplete(
 ) -> List[app_commands.Choice[str]]:
     """Autocomplete callback for era names."""
     try:
-        api = helpers.create_api_client()
-        try:
-            eras = api.get_eras()
-        finally:
-            api.close()
+        eras = await helpers.get_api().get_eras()
         choices = []
         for era in eras:
             name = era.name or ""
@@ -51,15 +46,12 @@ async def song_autocomplete(
     strongest indicator that an audio file exists for the song.
     """
     try:
-        api = helpers.create_api_client()
-        try:
-            if current and len(current) >= 2:
-                results = api.get_songs(search=current, page=1, page_size=25)
-            else:
-                # No input yet — show a default page of songs so the user sees options.
-                results = api.get_songs(page=1, page_size=25)
-        finally:
-            api.close()
+        api = helpers.get_api()
+        if current and len(current) >= 2:
+            results = await api.get_songs(search=current, page=1, page_size=25)
+        else:
+            # No input yet — show a default page of songs so the user sees options.
+            results = await api.get_songs(page=1, page_size=25)
         
         songs = results.get("results") or []
         choices = []
@@ -130,7 +122,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            eras = await _core.fetch_eras()
+            eras = await helpers.get_api().get_eras()
         except JuiceWRLDAPIError as e:
             await interaction.followup.send(f"Error fetching eras: {e}", ephemeral=True)
             return
@@ -163,7 +155,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            results = await _core.fetch_era_songs(era_name)
+            results = await helpers.get_api().get_songs(era=era_name, page=1, page_size=25)
         except JuiceWRLDAPIError as e:
             await interaction.followup.send(f"Error: {e}", ephemeral=True)
             return
@@ -175,7 +167,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
 
         ctx = await commands.Context.from_interaction(interaction)
         total = results.get("count") if isinstance(results, dict) else None
-        view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total, is_ephemeral=True)
+        view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total, is_ephemeral=True, play_fn=self._playback.play_song)
         embed = view.build_embed()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -191,7 +183,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
             return
 
-        title, top = await _core.find_similar_songs(guild.id)
+        title, top = await helpers.find_similar_songs(guild.id)
         if not title:
             await interaction.followup.send("Nothing is currently playing. Play a song first!", ephemeral=True)
             return
@@ -201,7 +193,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             return
 
         ctx = await commands.Context.from_interaction(interaction)
-        view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top), is_ephemeral=True)
+        view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top), is_ephemeral=True, play_fn=self._playback.play_song)
         embed = view.build_embed()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -228,12 +220,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
         else:
             # Search for the song
             try:
-                api = helpers.create_api_client()
-                try:
-                    results = api.get_songs(search=query, page=1, page_size=1)
-                finally:
-                    api.close()
-            
+                results = await helpers.get_api().get_songs(search=query, page=1, page_size=1)
                 songs = results.get("results") or []
                 if songs:
                     song_id = str(getattr(songs[0], "id", None))
@@ -276,12 +263,12 @@ class SlashCog(commands.GroupCog, group_name="jw"):
         ctx = await commands.Context.from_interaction(interaction)
 
         # Check if query is a song ID (from autocomplete selection)
+        api = helpers.get_api()
         if query.isdigit():
             # Fetch the specific song by ID
-            api = helpers.create_api_client()
             try:
-                song = api.get_song(int(query))
-                view = SingleSongResultView(ctx=ctx, song=song, query=query)
+                song = await api.get_song(int(query))
+                view = SingleSongResultView(ctx=ctx, song=song, query=query, play_fn=self._playback.play_song)
                 embed = view.build_embed()
                 await interaction.followup.send(embed=embed, view=view, ephemeral=True)
                 return
@@ -296,20 +283,15 @@ class SlashCog(commands.GroupCog, group_name="jw"):
                     f"Error fetching song: {e}", ephemeral=True
                 )
                 return
-            finally:
-                api.close()
 
         # Regular search query
-        api = helpers.create_api_client()
         try:
-            results = api.get_songs(search=query, page=1, page_size=25)
+            results = await api.get_songs(search=query, page=1, page_size=25)
         except JuiceWRLDAPIError as e:
             await interaction.followup.send(
                 f"Error while searching songs: {e}", ephemeral=True
             )
             return
-        finally:
-            api.close()
 
         songs = results.get("results") or []
         if not songs:
@@ -323,14 +305,64 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     
         # If only one result, show interactive single song view
         if len(songs) == 1:
-            view = SingleSongResultView(ctx=ctx, song=songs[0], query=query)
+            view = SingleSongResultView(ctx=ctx, song=songs[0], query=query, play_fn=self._playback.play_song)
             embed = view.build_embed()
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         else:
             # Multiple results: show pagination view
-            view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total, is_ephemeral=True)
+            view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total, is_ephemeral=True, play_fn=self._playback.play_song)
             embed = view.build_embed()
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+    @app_commands.command(name="song", description="Get detailed info for a song by ID.")
+    @app_commands.describe(song_id="The numeric song ID")
+    async def slash_song(self, interaction: discord.Interaction, song_id: int) -> None:
+        """Ephemeral equivalent of !jw song."""
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            song = await helpers.get_api().get_song(song_id)
+        except NotFoundError:
+            await interaction.followup.send(
+                f"No song found with ID `{song_id}`.", ephemeral=True
+            )
+            return
+        except JuiceWRLDAPIError as e:
+            await interaction.followup.send(
+                f"Error fetching song: {e}", ephemeral=True
+            )
+            return
+
+        ctx = await commands.Context.from_interaction(interaction)
+        view = SingleSongResultView(ctx=ctx, song=song, query=str(song_id), play_fn=self._playback.play_song)
+        embed = view.build_embed()
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+    @app_commands.command(name="join", description="Make the bot join your voice channel.")
+    async def slash_join(self, interaction: discord.Interaction) -> None:
+        """Ephemeral equivalent of !jw join."""
+
+        user = interaction.user
+        guild = interaction.guild
+        if not isinstance(user, discord.Member) or not guild:
+            await interaction.response.send_message(
+                "You need to be in a voice channel first.", ephemeral=True
+            )
+            return
+
+        voice = await helpers.ensure_voice_connected(guild, user)
+        if not voice:
+            await interaction.response.send_message(
+                "You need to be in a voice channel first.", ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"Joined voice channel: {voice.channel.name}", ephemeral=True
+        )
 
 
     @app_commands.command(name="leave", description="Disconnect the bot from voice chat.")
@@ -342,8 +374,8 @@ class SlashCog(commands.GroupCog, group_name="jw"):
         guild = interaction.guild
         voice: Optional[discord.VoiceClient] = guild.voice_client if guild else None
 
-        disconnected = await _core.leave_voice_channel(
-            guild, voice, delete_np_callback=_delete_now_playing_message_after_delay,
+        disconnected = await helpers.leave_voice_channel(
+            guild, voice, delete_np_callback=self._playback._delete_now_playing_message_after_delay,
         )
         if not disconnected:
             await interaction.followup.send(
@@ -386,9 +418,9 @@ class SlashCog(commands.GroupCog, group_name="jw"):
         voice: Optional[discord.VoiceClient] = guild.voice_client if guild else None
         if voice and (voice.is_playing() or voice.is_paused()):
             await self._playback._prefetch_next_radio_song(guild.id)
-            await helpers.send_temporary(ctx, "Radio enabled. Current song will finish, then radio starts.", delay=5)
+            await helpers.send_ephemeral_temporary(interaction, "Radio enabled. Current song will finish, then radio starts.", delay=5)
         else:
-            await helpers.send_temporary(ctx, "Radio mode enabled. Playing random songs until you run `!jw stop`.")
+            await helpers.send_ephemeral_temporary(interaction, "Radio mode enabled. Playing random songs until you run `/jw stop`.")
             await self._playback._play_random_song_in_guild(ctx)
 
 
@@ -396,11 +428,30 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_stop(self, interaction: discord.Interaction) -> None:
         """Stop playback and disable radio mode."""
 
-        # Acknowledge silently - stop_radio sends a temporary message that auto-deletes
         await interaction.response.defer(ephemeral=True)
 
-        ctx = await commands.Context.from_interaction(interaction)
-        await self._playback.stop_radio(ctx)
+        guild = interaction.guild
+        if guild:
+            state.guild_radio_enabled[guild.id] = False
+            state.guild_radio_next.pop(guild.id, None)
+
+        voice: Optional[discord.VoiceClient] = guild.voice_client if guild else None
+        if voice and (voice.is_playing() or voice.is_paused()):
+            voice.stop()
+
+        await helpers.send_ephemeral_temporary(interaction, "Radio mode disabled and playback stopped.", delay=5)
+
+        # Update the player embed to show idle state.
+        if guild:
+            ctx = await commands.Context.from_interaction(interaction)
+            await self._playback._send_player_controls(
+                ctx,
+                title="Nothing playing",
+                path=None,
+                is_radio=False,
+                metadata={},
+                duration_seconds=None,
+            )
 
 
     @app_commands.command(name="playlists", description="List your playlists.")
@@ -427,7 +478,72 @@ class SlashCog(commands.GroupCog, group_name="jw"):
 
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
+    @app_commands.command(name="sotd", description="Set the Song of the Day channel (admin).")
+    @app_commands.describe(channel="The text channel for daily Song of the Day posts")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def slash_sotd(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+        """Ephemeral equivalent of !jw sotd."""
 
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        state.sotd_config[str(guild.id)] = channel.id
+        state.save_sotd_config()
+        await interaction.response.send_message(
+            f"Song of the Day will be posted daily in {channel.mention}.", ephemeral=True
+        )
+
+
+    @app_commands.command(name="comp", description="Search comp files by name and play the best match.")
+    @app_commands.describe(
+        query="Search term for the file name",
+        scope="Which section to search (default: all)",
+    )
+    @app_commands.choices(scope=[
+        app_commands.Choice(name="All", value=""),
+        app_commands.Choice(name="Compilation", value="Compilation"),
+        app_commands.Choice(name="Studio Sessions", value="Studio Sessions"),
+        app_commands.Choice(name="Original Files", value="Original Files"),
+        app_commands.Choice(name="Session Edits", value="Session Edits"),
+        app_commands.Choice(name="Stem Edits", value="Stem Edits"),
+    ])
+    async def slash_comp(
+        self,
+        interaction: discord.Interaction,
+        query: str,
+        scope: app_commands.Choice[str] = None,
+    ) -> None:
+        """Slash equivalent of !jw comp / stusesh / og / seshedits / stems."""
+
+        user = interaction.user
+        if not isinstance(user, discord.Member) or not user.voice or not user.voice.channel:
+            await interaction.response.send_message(
+                "You need to be in a voice channel to play music.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        base_path = scope.value if scope else ""
+        scope_label = scope.name if scope else "the comp browser"
+
+        ctx = await commands.Context.from_interaction(interaction)
+        await self._playback._play_from_browse(
+            ctx,
+            query=query,
+            base_path=base_path,
+            scope_description=scope_label,
+        )
+
+        await helpers.send_ephemeral_temporary(
+            interaction,
+            f"Searching {scope_label} for `{query}`…",
+            delay=3,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -8,7 +8,6 @@ from discord.ext import commands
 from exceptions import JuiceWRLDAPIError, NotFoundError
 import helpers
 import state
-from commands import core as _core
 from views.search import SearchPaginationView, SingleSongResultView
 
 
@@ -18,13 +17,18 @@ class SearchCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    @property
+    def _play_fn(self):
+        """Return the PlaybackCog.play_song method for view callbacks."""
+        return self.bot.get_cog("PlaybackCog").play_song
+
     @commands.command(name="eras")
     async def list_eras(self, ctx: commands.Context):
         """List all Juice WRLD musical eras."""
 
         async with ctx.typing():
             try:
-                eras = await _core.fetch_eras()
+                eras = await helpers.get_api().get_eras()
             except JuiceWRLDAPIError as e:
                 await helpers.send_temporary(ctx, f"Error fetching eras: {e}")
                 return
@@ -53,7 +57,7 @@ class SearchCog(commands.Cog):
 
         async with ctx.typing():
             try:
-                results = await _core.fetch_era_songs(era_name)
+                results = await helpers.get_api().get_songs(era=era_name, page=1, page_size=25)
             except JuiceWRLDAPIError as e:
                 await helpers.send_temporary(ctx, f"Error fetching songs for era: {e}")
                 return
@@ -64,7 +68,7 @@ class SearchCog(commands.Cog):
             return
 
         total = results.get("count") if isinstance(results, dict) else None
-        view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total)
+        view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total, play_fn=self._play_fn)
         embed = view.build_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
@@ -79,7 +83,7 @@ class SearchCog(commands.Cog):
 
         async with ctx.typing():
             try:
-                title, top = await _core.find_similar_songs(ctx.guild.id)
+                title, top = await helpers.find_similar_songs(ctx.guild.id)
             except JuiceWRLDAPIError as e:
                 await helpers.send_temporary(ctx, f"Error finding similar songs: {e}")
                 return
@@ -92,7 +96,7 @@ class SearchCog(commands.Cog):
             await helpers.send_temporary(ctx, f"No similar songs found for **{title}**.")
             return
 
-        view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top))
+        view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top), play_fn=self._play_fn)
         embed = view.build_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
@@ -111,7 +115,7 @@ class SearchCog(commands.Cog):
 
         async with ctx.typing():
             try:
-                results = await _core.search_songs_api(query)
+                results = await helpers.get_api().get_songs(search=query, page=1, page_size=25)
             except JuiceWRLDAPIError as e:
                 await helpers.send_temporary(ctx, f"Error while searching songs: {e}")
                 return
@@ -127,7 +131,7 @@ class SearchCog(commands.Cog):
 
         total = results.get("count") if isinstance(results, dict) else None
 
-        view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total)
+        view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total, play_fn=self._play_fn)
         embed = view.build_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
@@ -136,8 +140,8 @@ class SearchCog(commands.Cog):
     async def song_details(self, ctx: commands.Context, song_id: str):
         """Get detailed info for a single song by ID.
 
-        The song ID must be numeric; if it isn't, we show a helpful
-        error message instead of raising a conversion error.
+        Shows an interactive view with Play / Add to Playlist / Info
+        buttons — the same experience as selecting a search result.
         """
 
         try:
@@ -147,35 +151,18 @@ class SearchCog(commands.Cog):
             return
 
         async with ctx.typing():
-            api = helpers.create_api_client()
             try:
-                song = api.get_song(song_id_int)
+                song = await helpers.get_api().get_song(song_id_int)
             except NotFoundError:
                 await ctx.send(f"No song found with ID `{song_id_int}`.")
                 return
             except JuiceWRLDAPIError as e:
                 await ctx.send(f"Error while fetching song: {e}")
                 return
-            finally:
-                api.close()
 
-        name = getattr(song, "name", getattr(song, "title", "Unknown"))
-        category = getattr(song, "category", "?")
-        length = getattr(song, "length", "?")
-        era_name = getattr(getattr(song, "era", None), "name", "?")
-        producers = getattr(song, "producers", None)
-
-        desc_lines = [
-            f"**{name}** (ID: `{song_id_int}`)",
-            f"Category: `{category}`",
-            f"Length: `{length}`",
-            f"Era: `{era_name}`",
-        ]
-
-        if producers:
-            desc_lines.append(f"Producers: {producers}")
-
-        await ctx.send("\n".join(desc_lines))
+        view = SingleSongResultView(ctx=ctx, song=song, query=song_id, play_fn=self._play_fn)
+        embed = view.build_embed()
+        await ctx.send(embed=embed, view=view)
 
 
 async def setup(bot: commands.Bot) -> None:

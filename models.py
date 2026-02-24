@@ -89,14 +89,6 @@ class DirectoryInfo:
 
 
 @dataclass
-class SearchResult:
-    songs: List[Song]
-    total: int
-    category: Optional[str]
-    query_time: str
-
-
-@dataclass
 class Stats:
     total_songs: int
     category_stats: Dict[str, int]

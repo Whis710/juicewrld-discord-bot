@@ -6,7 +6,6 @@ import io
 import sys
 from typing import Any, Dict, List, Optional
 
-import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -128,36 +127,37 @@ class AdminCog(commands.Cog):
         embed = discord.Embed(title="Juice WRLD Bot Help", colour=discord.Colour.purple())
 
         core_lines = [
-            "`!jw ping` — Check if the bot is alive.",
-            "`!jw search <query>` — Search for Juice WRLD songs.",
-            "`!jw song <song_id>` — Get details for a specific song by ID.",
-            "`!jw join` — Make the bot join your current voice channel.",
-            "`!jw leave` — Disconnect the bot from voice chat.",
-            "`!jw play <song_id>` — Play a Juice WRLD song in voice chat.",
+            "`!jw play <song_id>` — Play a song by ID in your voice channel.",
+            "`!jw search <query>` — Search songs with interactive Play/Playlist/Info buttons.",
+            "`!jw song <song_id>` — View song details with Play/Playlist/Info buttons.",
             "`!jw radio` — Start radio mode (random songs until `!jw stop`).",
             "`!jw stop` — Stop playback and turn off radio mode.",
+            "`!jw join` — Make the bot join your voice channel.",
+            "`!jw leave` — Disconnect the bot from voice.",
+            "`!jw ping` — Check if the bot is alive.",
         ]
         embed.add_field(name="Core Commands", value="\n".join(core_lines), inline=False)
 
-        search_lines = [
-            "`!jw playfile <file_path>` — Play directly from a specific comp file path.",
-            "`!jw playsearch <name>` — Search all comp files by name and play the best match.",
-            "`!jw stusesh <name>` — Search Studio Sessions only and play the best match.",
-            "`!jw og <name>` — Search Original Files only and play the best match.",
-            "`!jw seshedits <name>` — Search Session Edits only and play the best match.",
-            "`!jw stems <name>` — Search Stem Edits only and play the best match.",
-            "`!jw comp <name>` — Search Compilation (released/unreleased/misc) and play the best match.",
+        comp_lines = [
+            "`!jw comp <name>` — Search Compilation and play the best match.",
+            "`!jw stusesh <name>` — Search Studio Sessions only.",
+            "`!jw og <name>` — Search Original Files only.",
+            "`!jw seshedits <name>` — Search Session Edits only.",
+            "`!jw stems <name>` — Search Stem Edits only.",
+            "`!jw playsearch <name>` — Search all comp files.",
+            "`!jw playfile <path>` — Play directly from a comp file path.",
         ]
-        embed.add_field(name="Search & Comp Playback", value="\n".join(search_lines), inline=False)
+        embed.add_field(name="Comp Playback", value="\n".join(comp_lines), inline=False)
 
         playlist_lines = [
-            "`!jw pl` — List your playlists and a short preview.",
-            "`!jw pl show <name>` — Show full contents of one playlist.",
+            "`!jw pl` — List your playlists (also `!jw playlist` or `!jw playlists`).",
+            "`!jw pl show <name>` — Show full contents of a playlist.",
             "`!jw pl play <name>` — Queue/play all tracks in a playlist.",
             "`!jw pl add <name> <song_id>` — Add a song (by ID) to a playlist.",
-            "`!jw pl delete <name>` — Delete one of your playlists.",
-            "`!jw pl rename <old> <new>` — Rename one of your playlists.",
-            "`!jw pl remove <name> <index>` — Remove a track (1-based index).",
+            "`!jw pl create <name>` — Create a new empty playlist.",
+            "`!jw pl delete <name>` — Delete a playlist.",
+            "`!jw pl rename <old> <new>` — Rename a playlist.",
+            "`!jw pl remove <name> <index>` — Remove a track by index.",
         ]
         embed.add_field(name="Playlists", value="\n".join(playlist_lines), inline=False)
 
@@ -165,18 +165,25 @@ class AdminCog(commands.Cog):
             "`!jw eras` — List all Juice WRLD musical eras.",
             "`!jw era <name>` — Browse songs from a specific era.",
             "`!jw similar` — Find songs similar to the currently playing track.",
+            "`!jw stats` — View your personal listening stats.",
         ]
         embed.add_field(name="Browse & Discover", value="\n".join(browse_lines), inline=False)
 
-        misc_lines = [
-            "`!jw stats` — View your personal listening stats.",
-            "`!jw sotd #channel` — Set the Song of the Day channel (admin).",
-            "`!jw emoji list|upload|delete` — Manage application emojis (admin).",
+        admin_lines = [
+            "`!jw sotd #channel` — Set the Song of the Day channel.",
+            "`!jw emoji list|upload|delete` — Manage application emojis.",
+            "`!jw sync` — Force-sync slash commands to Discord.",
             "`!jw ver` — Show bot version and recent updates.",
         ]
-        embed.add_field(name="Misc", value="\n".join(misc_lines), inline=False)
+        embed.add_field(name="Admin", value="\n".join(admin_lines), inline=False)
 
-        embed.set_footer(text="Prefix: !jw  •  Example: !jw play 12345")
+        slash_lines = [
+            "All commands are also available as `/jw <command>`.",
+            "Type `/jw` in chat to see the full slash command list.",
+        ]
+        embed.add_field(name="Slash Commands", value="\n".join(slash_lines), inline=False)
+
+        embed.set_footer(text="Prefix: !jw  •  Aliases: !jw pl = !jw playlist = !jw playlists")
 
         await ctx.send(embed=embed)
 
@@ -203,32 +210,24 @@ class AdminCog(commands.Cog):
         msg = await ctx.send("Syncing slash commands...")
     
         try:
-            # Clear existing commands
-            self.bot.tree.clear_commands(guild=None)
-            if ctx.guild:
-                self.bot.tree.clear_commands(guild=ctx.guild)
-        
-            # Re-add the command group
-            self.bot.tree.add_command(jw_group)
-        
             # Sync to this guild first (instant)
             if ctx.guild:
                 await self.bot.tree.sync(guild=ctx.guild)
                 await msg.edit(content=f"✅ Synced slash commands to **{ctx.guild.name}**!\n\n"
                                        f"The `/jw` commands should now be available in this server.\n"
                                        f"Syncing globally (may take up to 1 hour)...")
-        
+
             # Sync globally (takes up to 1 hour to propagate)
             await self.bot.tree.sync()
-        
+
             await msg.edit(content=f"✅ Successfully synced slash commands!\n\n"
                                    f"• **Guild sync**: Instant (commands available now in this server)\n"
                                    f"• **Global sync**: Started (may take up to 1 hour for other servers)\n\n"
                                    f"Try typing `/jw` to see the commands.")
-        
+
             # Delete after 15 seconds
             asyncio.create_task(helpers.delete_later(msg, 15))
-        
+
         except Exception as e:
             await msg.edit(content=f"❌ Error syncing commands: {e}")
             print(f"Sync error: {e}", file=sys.stderr)
@@ -338,14 +337,11 @@ class AdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         # Search the API for this song and try to play it.
-        api = helpers.create_api_client()
         try:
-            results = api.get_songs(search=song_title, page=1, page_size=1)
+            results = await helpers.get_api().get_songs(search=song_title, page=1, page_size=1)
         except Exception as e:
             await interaction.followup.send(f"Error searching: {e}", ephemeral=True)
             return
-        finally:
-            api.close()
 
         songs = results.get("results") or []
         if not songs:
@@ -362,7 +358,11 @@ class AdminCog(commands.Cog):
 
         # Use the existing play logic via a Context.
         ctx = await commands.Context.from_interaction(interaction)
-        await play_song(ctx, str(song_id))
+        playback = self._playback
+        if not playback:
+            await interaction.followup.send("Playback system is not available.", ephemeral=True)
+            return
+        await playback.play_song(ctx, str(song_id))
         await interaction.followup.send(f"Playing **{song_title}**.", ephemeral=True)
 
 
@@ -400,13 +400,13 @@ class AdminCog(commands.Cog):
         """List all application emojis."""
         url = f"https://discord.com/api/v10/applications/{app_id}/emojis"
         headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+        session = await helpers.get_discord_session()
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    await ctx.send(f"Failed to fetch emojis: HTTP {resp.status}")
-                    return
-                data = await resp.json()
+        async with session.get(url, headers=headers) as resp:
+            if resp.status != 200:
+                await ctx.send(f"Failed to fetch emojis: HTTP {resp.status}")
+                return
+            data = await resp.json()
 
         items = data.get("items", [])
         if not items:
@@ -461,15 +461,15 @@ class AdminCog(commands.Cog):
         }
         payload = {"name": name, "image": data_uri}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status in (200, 201):
-                    result = await resp.json()
-                    eid = result.get("id", "?")
-                    await ctx.send(f"✅ Emoji `{name}` uploaded! Use it as `<:{name}:{eid}>`")
-                else:
-                    body = await resp.text()
-                    await ctx.send(f"❌ Upload failed: HTTP {resp.status}\n```{body[:500]}```")
+        session = await helpers.get_discord_session()
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status in (200, 201):
+                result = await resp.json()
+                eid = result.get("id", "?")
+                await ctx.send(f"✅ Emoji `{name}` uploaded! Use it as `<:{name}:{eid}>`")
+            else:
+                body = await resp.text()
+                await ctx.send(f"❌ Upload failed: HTTP {resp.status}\n```{body[:500]}```")
 
 
     async def _emoji_delete(self, ctx: commands.Context, app_id: int, name: str) -> None:
@@ -481,33 +481,33 @@ class AdminCog(commands.Cog):
         # First, find the emoji ID by listing all.
         list_url = f"https://discord.com/api/v10/applications/{app_id}/emojis"
         headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+        session = await helpers.get_discord_session()
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(list_url, headers=headers) as resp:
-                if resp.status != 200:
-                    await ctx.send(f"Failed to list emojis: HTTP {resp.status}")
-                    return
-                data = await resp.json()
-
-            items = data.get("items", [])
-            target = None
-            for e in items:
-                if e.get("name", "").lower() == name.lower():
-                    target = e
-                    break
-
-            if not target:
-                await helpers.send_temporary(ctx, f"No emoji named `{name}` found.")
+        async with session.get(list_url, headers=headers) as resp:
+            if resp.status != 200:
+                await ctx.send(f"Failed to list emojis: HTTP {resp.status}")
                 return
+            data = await resp.json()
 
-            eid = target["id"]
-            del_url = f"https://discord.com/api/v10/applications/{app_id}/emojis/{eid}"
-            async with session.delete(del_url, headers=headers) as resp:
-                if resp.status == 204:
-                    await ctx.send(f"✅ Emoji `{name}` deleted.")
-                else:
-                    body = await resp.text()
-                    await ctx.send(f"❌ Delete failed: HTTP {resp.status}\n```{body[:500]}```")
+        items = data.get("items", [])
+        target = None
+        for e in items:
+            if e.get("name", "").lower() == name.lower():
+                target = e
+                break
+
+        if not target:
+            await helpers.send_temporary(ctx, f"No emoji named `{name}` found.")
+            return
+
+        eid = target["id"]
+        del_url = f"https://discord.com/api/v10/applications/{app_id}/emojis/{eid}"
+        async with session.delete(del_url, headers=headers) as resp:
+            if resp.status == 204:
+                await ctx.send(f"✅ Emoji `{name}` deleted.")
+            else:
+                body = await resp.text()
+                await ctx.send(f"❌ Delete failed: HTTP {resp.status}\n```{body[:500]}```")
 
 
 
