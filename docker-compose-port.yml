@@ -3,10 +3,14 @@
        image: bryanr710/juicewrld-bot:latest
        container_name: juicewrld-discord-bot
        restart: unless-stopped
+       ports:
+         - "8080:8080"
        environment:
          - DISCORD_TOKEN=${DISCORD_TOKEN}
          - CLIENT_ID=${CLIENT_ID}
          - GUILD_ID=${GUILD_ID}
+         - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET}
+         - LINKED_ROLES_URL=${LINKED_ROLES_URL}
          - JUICEWRLD_API_BASE_URL=${JUICE_BASE_URL:-https://juicewrldapi.com}
        volumes:
          - /home/bryan/projects/juicewrld-discord-bot/bot.py:/app/bot.py:ro
