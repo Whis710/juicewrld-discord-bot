@@ -86,6 +86,10 @@ def _get_or_create_user_playlists(user_id: int) -> Dict[str, List[Dict[str, Any]
 
 PLAYLISTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "playlists.json")
 STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "listening_stats.json")
+SOTD_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sotd_config.json")
+
+# Song of the Day config: { guild_id_str: channel_id }
+_sotd_config: Dict[str, int] = {}
 
 # Per-user listening stats:
 # { user_id: { "total_plays": int, "total_seconds": int,
@@ -191,8 +195,30 @@ def _record_listen(user_id: int, title: str, era_name: Optional[str], duration_s
     _save_listening_stats_to_disk()
 
 
+def _load_sotd_config() -> None:
+    """Load SOTD channel config from disk."""
+    global _sotd_config
+    try:
+        with open(SOTD_CONFIG_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (FileNotFoundError, Exception):
+        return
+    if isinstance(raw, dict):
+        _sotd_config = raw
+
+
+def _save_sotd_config() -> None:
+    """Persist SOTD channel config to disk."""
+    try:
+        with open(SOTD_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(_sotd_config, f, ensure_ascii=False)
+    except Exception:
+        return
+
+
 _load_user_playlists_from_disk()
 _load_listening_stats_from_disk()
+_load_sotd_config()
 
 
 def _parse_length_to_seconds(length: str) -> Optional[int]:
@@ -3939,6 +3965,127 @@ async def _update_player_messages() -> None:
             continue
 
 
+class SongOfTheDayView(discord.ui.View):
+    """View with a Play button for the Song of the Day embed."""
+
+    def __init__(self, *, song_data: Dict[str, Any]) -> None:
+        super().__init__(timeout=None)  # persistent — no timeout
+        self.song_data = song_data
+
+    @discord.ui.button(label="▶️ Play", style=discord.ButtonStyle.primary)
+    async def play_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        user = interaction.user
+        if not isinstance(user, discord.Member) or not user.voice or not user.voice.channel:
+            await interaction.response.send_message(
+                "You need to be in a voice channel to play this.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if not guild:
+            return
+
+        channel = user.voice.channel
+        voice: Optional[discord.VoiceClient] = guild.voice_client  # type: ignore[assignment]
+        if voice and voice.is_connected():
+            if voice.channel != channel:
+                await voice.move_to(channel)
+        else:
+            voice = await channel.connect()
+
+        file_path = self.song_data.get("path")
+        if not file_path:
+            await interaction.followup.send("No playable file for this song.", ephemeral=True)
+            return
+
+        stream_url = await _get_fresh_stream_url(file_path)
+        if not stream_url:
+            await interaction.followup.send("Could not get a stream URL for this song.", ephemeral=True)
+            return
+
+        # Build a fake ctx from the interaction so queue_or_play_now works.
+        ctx = await bot.get_context(await interaction.channel.fetch_message(interaction.message.id))
+        ctx.author = user  # type: ignore[assignment]
+
+        title = self.song_data.get("title", "Unknown")
+        metadata = self.song_data.get("metadata", {})
+        duration_seconds = self.song_data.get("duration_seconds")
+
+        await _queue_or_play_now(
+            ctx,
+            stream_url=stream_url,
+            title=title,
+            path=file_path,
+            metadata=metadata,
+            duration_seconds=duration_seconds,
+        )
+        await interaction.followup.send(f"Now playing: **{title}**", ephemeral=True)
+
+
+@tasks.loop(hours=24)
+async def _song_of_the_day_task() -> None:
+    """Post a random Song of the Day to configured channels."""
+
+    if not _sotd_config:
+        return
+
+    song_data = await _fetch_random_radio_song(include_stream_url=False)
+    if not song_data:
+        return
+
+    title = song_data.get("title", "Unknown")
+    metadata = song_data.get("metadata", {})
+    duration_seconds = song_data.get("duration_seconds")
+
+    embed = discord.Embed(
+        title="🎵 Song of the Day",
+        description=f"**{title}**",
+        colour=discord.Colour.gold(),
+    )
+    image_url = metadata.get("image_url")
+    if image_url:
+        embed.set_thumbnail(url=image_url)
+    if metadata.get("category"):
+        embed.add_field(name="Category", value=str(metadata["category"]), inline=True)
+    era_val = metadata.get("era")
+    if era_val:
+        era_text = era_val.get("name") if isinstance(era_val, dict) else str(era_val)
+        if era_text:
+            embed.add_field(name="Era", value=era_text, inline=True)
+    producers = metadata.get("producers")
+    if producers:
+        embed.add_field(name="Producers", value=str(producers), inline=True)
+    if duration_seconds:
+        m, s = divmod(duration_seconds, 60)
+        embed.add_field(name="Length", value=f"{m}:{s:02d}", inline=True)
+    embed.set_footer(text="Press Play to listen!")
+
+    view = SongOfTheDayView(song_data=song_data)
+
+    for guild_id_str, channel_id in list(_sotd_config.items()):
+        guild_obj = bot.get_guild(int(guild_id_str))
+        if not guild_obj:
+            continue
+        chan = guild_obj.get_channel(channel_id)
+        if not isinstance(chan, discord.TextChannel):
+            continue
+        try:
+            await chan.send(embed=embed, view=view)
+        except Exception:
+            continue
+
+
+@_song_of_the_day_task.before_loop
+async def _before_sotd() -> None:
+    await bot.wait_until_ready()
+
+
 async def _auto_disconnect_guild(guild: discord.Guild, reason: str = "inactivity") -> None:
     """Cleanly disconnect the bot from voice in a guild and reset state."""
 
@@ -4043,6 +4190,8 @@ async def on_ready():
         _update_player_messages.start()
     if not _idle_auto_leave.is_running():
         _idle_auto_leave.start()
+    if not _song_of_the_day_task.is_running():
+        _song_of_the_day_task.start()
 
     # Clear and sync application (slash) commands
     try:
@@ -4151,8 +4300,16 @@ async def help_command(ctx: commands.Context):
     ]
     embed.add_field(name="Playlists", value="\n".join(playlist_lines), inline=False)
 
+    browse_lines = [
+        "`!jw eras` — List all Juice WRLD musical eras.",
+        "`!jw era <name>` — Browse songs from a specific era.",
+        "`!jw similar` — Find songs similar to the currently playing track.",
+    ]
+    embed.add_field(name="Browse & Discover", value="\n".join(browse_lines), inline=False)
+
     misc_lines = [
         "`!jw stats` — View your personal listening stats.",
+        "`!jw sotd #channel` — Set the Song of the Day channel (admin).",
         "`!jw ver` — Show bot version and recent updates.",
     ]
     embed.add_field(name="Misc", value="\n".join(misc_lines), inline=False)
@@ -4216,7 +4373,7 @@ async def sync_commands(ctx: commands.Context):
 
 
 # Bot version info
-BOT_VERSION = "1.8.0"
+BOT_VERSION = "1.9.0"
 BOT_BUILD_DATE = "2026-02-24"
 
 
@@ -4232,14 +4389,13 @@ async def version_command(ctx: commands.Context):
     embed.add_field(
         name="Recent Updates",
         value=(
+            "• 🎵 Song of the Day — daily featured song with Play button\n"
+            "• `!jw eras` / `/jw eras` — Browse all musical eras\n"
+            "• `!jw era` / `/jw era` — Songs from a specific era (with autocomplete)\n"
+            "• `!jw similar` / `/jw similar` — Find similar songs to what's playing\n"
             "• `!jw stats` / `/jw stats` — Personal listening stats\n"
-            "• Bot now shows current song as its Discord activity\n"
-            "• `/jw play` autocomplete now only shows playable songs\n"
-            "• Auto-leave after 30 min of inactivity\n"
-            "• Auto-leave when everyone leaves the voice channel\n"
-            "• Radio now lets current song finish before starting\n"
-            "• `/jw play` with autocomplete search\n"
-            "• `/jw search` with autocomplete"
+            "• Bot shows current song as its Discord activity\n"
+            "• Auto-leave on 30 min inactivity or empty VC"
         ),
         inline=False,
     )
@@ -4265,6 +4421,169 @@ async def slash_stats(interaction: discord.Interaction) -> None:
     embed = _build_stats_embed(interaction.user)
     await interaction.response.send_message(embed=embed, ephemeral=True)
     _schedule_interaction_deletion(interaction, 30)
+
+
+@jw_group.command(name="eras", description="List all Juice WRLD musical eras.")
+async def slash_eras(interaction: discord.Interaction) -> None:
+    """Ephemeral equivalent of !jw eras."""
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    api = create_api_client()
+    try:
+        eras = api.get_eras()
+    except JuiceWRLDAPIError as e:
+        await interaction.followup.send(f"Error fetching eras: {e}", ephemeral=True)
+        return
+    finally:
+        api.close()
+
+    if not eras:
+        await interaction.followup.send("No eras found.", ephemeral=True)
+        return
+
+    lines = []
+    for era in eras:
+        tf = f" ({era.time_frame})" if era.time_frame else ""
+        lines.append(f"**{era.name}**{tf}")
+
+    embed = discord.Embed(
+        title="Juice WRLD Eras",
+        description="\n".join(lines),
+        colour=discord.Colour.purple(),
+    )
+    embed.set_footer(text="Use /jw era <name> to browse songs from an era.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+    _schedule_interaction_deletion(interaction, 30)
+
+
+async def era_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Autocomplete callback for era names."""
+    try:
+        api = create_api_client()
+        try:
+            eras = api.get_eras()
+        finally:
+            api.close()
+        choices = []
+        for era in eras:
+            name = era.name or ""
+            if current and current.lower() not in name.lower():
+                continue
+            display = f"{name} ({era.time_frame})" if era.time_frame else name
+            if len(display) > 100:
+                display = display[:97] + "..."
+            choices.append(app_commands.Choice(name=display, value=name))
+            if len(choices) >= 25:
+                break
+        return choices
+    except Exception:
+        return []
+
+
+@jw_group.command(name="era", description="Browse songs from a specific era.")
+@app_commands.describe(era_name="Name of the era to browse")
+@app_commands.autocomplete(era_name=era_autocomplete)
+async def slash_era(interaction: discord.Interaction, era_name: str) -> None:
+    """Ephemeral equivalent of !jw era."""
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    api = create_api_client()
+    try:
+        results = api.get_songs(era=era_name, page=1, page_size=25)
+    except JuiceWRLDAPIError as e:
+        await interaction.followup.send(f"Error: {e}", ephemeral=True)
+        return
+    finally:
+        api.close()
+
+    songs = results.get("results") or []
+    if not songs:
+        await interaction.followup.send(f"No songs found for era `{era_name}`.", ephemeral=True)
+        return
+
+    ctx = await commands.Context.from_interaction(interaction)
+    total = results.get("count") if isinstance(results, dict) else None
+    view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total, is_ephemeral=True)
+    embed = view.build_embed()
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+@jw_group.command(name="similar", description="Find songs similar to the currently playing track.")
+async def slash_similar(interaction: discord.Interaction) -> None:
+    """Ephemeral equivalent of !jw similar."""
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    guild = interaction.guild
+    if not guild:
+        await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+        return
+
+    info = _guild_now_playing.get(guild.id)
+    title = info.get("title") if info else None
+    if not info or not title or title == "Nothing playing":
+        await interaction.followup.send("Nothing is currently playing. Play a song first!", ephemeral=True)
+        return
+
+    meta = info.get("metadata") or {}
+    era_val = meta.get("era")
+    era_name = None
+    if isinstance(era_val, dict):
+        era_name = era_val.get("name")
+    elif era_val:
+        era_name = str(era_val)
+
+    producers_str = meta.get("producers") or ""
+    category = meta.get("category") or ""
+
+    candidates: List[Any] = []
+    api = create_api_client()
+    try:
+        if era_name:
+            res = api.get_songs(era=era_name, page=1, page_size=25)
+            candidates = res.get("results") or []
+        if len(candidates) < 5 and category:
+            res2 = api.get_songs(category=category, page=1, page_size=25)
+            existing_ids = {getattr(s, "id", None) for s in candidates}
+            for s in (res2.get("results") or []):
+                if getattr(s, "id", None) not in existing_ids:
+                    candidates.append(s)
+    except JuiceWRLDAPIError as e:
+        await interaction.followup.send(f"Error: {e}", ephemeral=True)
+        return
+    finally:
+        api.close()
+
+    candidates = [s for s in candidates if getattr(s, "name", None) != title]
+
+    def _score(song: Any) -> int:
+        sc = 0
+        s_era = getattr(getattr(song, "era", None), "name", "")
+        if era_name and s_era == era_name:
+            sc += 2
+        s_prod = getattr(song, "producers", "") or ""
+        if producers_str and s_prod and any(p.strip() in s_prod for p in producers_str.split(",") if p.strip()):
+            sc += 3
+        if category and getattr(song, "category", "") == category:
+            sc += 1
+        return sc
+
+    candidates.sort(key=_score, reverse=True)
+    top = candidates[:10]
+
+    if not top:
+        await interaction.followup.send(f"No similar songs found for **{title}**.", ephemeral=True)
+        return
+
+    ctx = await commands.Context.from_interaction(interaction)
+    view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top), is_ephemeral=True)
+    embed = view.build_embed()
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 # @jw_group.command(name="song", description="Get details for a specific song by ID.")
@@ -4931,6 +5250,150 @@ async def slash_playlists(interaction: discord.Interaction) -> None:
 #         except Exception:
 #             pass
 #     asyncio.create_task(_delete_after_delay())
+
+
+@bot.command(name="sotd")
+@commands.has_permissions(administrator=True)
+async def setup_sotd(ctx: commands.Context, channel: discord.TextChannel):
+    """Set (or update) the Song of the Day channel for this server (admin only)."""
+
+    if not ctx.guild:
+        await _send_temporary(ctx, "This command can only be used in a server.")
+        return
+
+    _sotd_config[str(ctx.guild.id)] = channel.id
+    _save_sotd_config()
+    await _send_temporary(ctx, f"Song of the Day will be posted daily in {channel.mention}.")
+
+
+@bot.command(name="eras")
+async def list_eras(ctx: commands.Context):
+    """List all Juice WRLD musical eras."""
+
+    async with ctx.typing():
+        api = create_api_client()
+        try:
+            eras = api.get_eras()
+        except JuiceWRLDAPIError as e:
+            await _send_temporary(ctx, f"Error fetching eras: {e}")
+            return
+        finally:
+            api.close()
+
+    if not eras:
+        await _send_temporary(ctx, "No eras found.")
+        return
+
+    lines = []
+    for era in eras:
+        tf = f" ({era.time_frame})" if era.time_frame else ""
+        lines.append(f"**{era.name}**{tf}")
+
+    embed = discord.Embed(
+        title="Juice WRLD Eras",
+        description="\n".join(lines),
+        colour=discord.Colour.purple(),
+    )
+    embed.set_footer(text="Use !jw era <name> to browse songs from an era.")
+    await _send_temporary(ctx, embed=embed, delay=30)
+
+
+@bot.command(name="era")
+async def browse_era(ctx: commands.Context, *, era_name: str):
+    """Browse songs from a specific era."""
+
+    async with ctx.typing():
+        api = create_api_client()
+        try:
+            results = api.get_songs(era=era_name, page=1, page_size=25)
+        except JuiceWRLDAPIError as e:
+            await _send_temporary(ctx, f"Error fetching songs for era: {e}")
+            return
+        finally:
+            api.close()
+
+    songs = results.get("results") or []
+    if not songs:
+        await _send_temporary(ctx, f"No songs found for era `{era_name}`.")
+        return
+
+    total = results.get("count") if isinstance(results, dict) else None
+    view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total)
+    embed = view.build_embed()
+    view.message = await ctx.send(embed=embed, view=view)
+
+
+@bot.command(name="similar")
+async def similar_songs(ctx: commands.Context):
+    """Find songs similar to the currently playing track."""
+
+    if not ctx.guild:
+        await _send_temporary(ctx, "This command can only be used in a server.")
+        return
+
+    info = _guild_now_playing.get(ctx.guild.id)
+    title = info.get("title") if info else None
+    if not info or not title or title == "Nothing playing":
+        await _send_temporary(ctx, "Nothing is currently playing. Play a song first!")
+        return
+
+    meta = info.get("metadata") or {}
+    era_val = meta.get("era")
+    era_name = None
+    if isinstance(era_val, dict):
+        era_name = era_val.get("name")
+    elif era_val:
+        era_name = str(era_val)
+
+    producers_str = meta.get("producers") or ""
+    category = meta.get("category") or ""
+
+    # Strategy: search by era first, fall back to category
+    candidates: List[Any] = []
+    async with ctx.typing():
+        api = create_api_client()
+        try:
+            if era_name:
+                res = api.get_songs(era=era_name, page=1, page_size=25)
+                candidates = res.get("results") or []
+            if len(candidates) < 5 and category:
+                res2 = api.get_songs(category=category, page=1, page_size=25)
+                existing_ids = {getattr(s, "id", None) for s in candidates}
+                for s in (res2.get("results") or []):
+                    if getattr(s, "id", None) not in existing_ids:
+                        candidates.append(s)
+        except JuiceWRLDAPIError as e:
+            await _send_temporary(ctx, f"Error finding similar songs: {e}")
+            return
+        finally:
+            api.close()
+
+    # Remove the currently playing song from results
+    candidates = [s for s in candidates if getattr(s, "name", None) != title]
+
+    # Score: same producers > same era > same category
+    def _score(song: Any) -> int:
+        sc = 0
+        s_era = getattr(getattr(song, "era", None), "name", "")
+        if era_name and s_era == era_name:
+            sc += 2
+        s_prod = getattr(song, "producers", "") or ""
+        if producers_str and s_prod and any(p.strip() in s_prod for p in producers_str.split(",") if p.strip()):
+            sc += 3
+        if category and getattr(song, "category", "") == category:
+            sc += 1
+        return sc
+
+    candidates.sort(key=_score, reverse=True)
+    top = candidates[:10]
+
+    if not top:
+        await _send_temporary(ctx, f"No similar songs found for **{title}**.")
+        return
+
+    view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top))
+    embed = view.build_embed()
+    view.message = await ctx.send(embed=embed, view=view)
 
 
 @bot.command(name="stats")
