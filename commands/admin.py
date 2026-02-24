@@ -233,11 +233,6 @@ class AdminCog(commands.Cog):
             print(f"Sync error: {e}", file=sys.stderr)
 
 
-    # Bot version info (canonical values live in constants.py)
-    BOT_VERSION = _CONST_BOT_VERSION
-    BOT_BUILD_DATE = _CONST_BOT_BUILD_DATE
-
-
     @commands.command(name="ver", aliases=["version"])
     async def version_command(self, ctx: commands.Context):
         """Show bot version information."""
