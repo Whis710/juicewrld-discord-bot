@@ -3966,8 +3966,8 @@ async def sync_commands(ctx: commands.Context):
 
 
 # Bot version info
-BOT_VERSION = "1.5.0"
-BOT_BUILD_DATE = "2026-02-22"
+BOT_VERSION = "1.6.0"
+BOT_BUILD_DATE = "2026-02-24"
 
 
 @bot.command(name="ver", aliases=["version"])
@@ -3982,6 +3982,7 @@ async def version_command(ctx: commands.Context):
     embed.add_field(
         name="Recent Updates",
         value=(
+            "• Radio now lets current song finish before starting\n"
             "• `/jw play` with autocomplete search\n"
             "• `/jw search` with autocomplete\n"
             "• Fixed radio skipping issue\n"
