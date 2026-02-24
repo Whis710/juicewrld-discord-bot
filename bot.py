@@ -4654,14 +4654,14 @@ async def song_autocomplete(
     Only includes songs that have a duration (length), which is the
     strongest indicator that an audio file exists for the song.
     """
-    if not current or len(current) < 2:
-        return []
-    
     try:
         api = create_api_client()
         try:
-            # Fetch more results so we still have enough after filtering.
-            results = api.get_songs(search=current, page=1, page_size=25)
+            if current and len(current) >= 2:
+                results = api.get_songs(search=current, page=1, page_size=25)
+            else:
+                # No input yet — show a default page of songs so the user sees options.
+                results = api.get_songs(page=1, page_size=25)
         finally:
             api.close()
         
