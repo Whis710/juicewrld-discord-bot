@@ -629,7 +629,13 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             # Create timeline view
             from views.timeline import LeakTimelineView
             ctx = await commands.Context.from_interaction(interaction)
-            view = LeakTimelineView(ctx=ctx, songs=all_songs)
+            playback = self._playback
+            view = LeakTimelineView(
+                ctx=ctx,
+                songs=all_songs,
+                play_fn=playback.play_song if playback else None,
+                queue_fn=playback._queue_or_play_now if playback else None,
+            )
             embed = view.build_embed()
             
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)

@@ -2,13 +2,14 @@
 
 import math
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import discord
 from discord import ui
 from discord.ext import commands
 
 import helpers
+import state
 
 
 class LeakTimelineView(ui.View):
@@ -19,16 +20,22 @@ class LeakTimelineView(ui.View):
         *,
         ctx: commands.Context,
         songs: List[Any],
+        play_fn: Optional[Callable] = None,
+        queue_fn: Optional[Callable] = None,
         era_filter: Optional[str] = None,
         year_filter: Optional[str] = None,
     ):
         super().__init__(timeout=120)
         self.ctx = ctx
         self.all_songs = songs
+        self._play_fn = play_fn
+        self._queue_fn = queue_fn
         self.era_filter = era_filter
         self.year_filter = year_filter
         self.per_page = 10
         self.current_page = 0
+        self.selected_song = None
+        self.mode = "list"  # "list" or "song_detail"
         
         # Sort songs by leak date (newest first)
         self.all_songs.sort(
@@ -64,6 +71,10 @@ class LeakTimelineView(ui.View):
 
     def build_embed(self) -> discord.Embed:
         """Build the timeline embed."""
+        if self.mode == "song_detail":
+            return self._build_song_detail_embed()
+        
+        # List mode
         start = self.current_page * self.per_page
         page_songs = self.all_songs[start:start + self.per_page]
         
@@ -125,40 +136,159 @@ class LeakTimelineView(ui.View):
         if footer_parts:
             embed.set_footer(text=" | ".join(footer_parts))
         else:
-            embed.set_footer(text="Use the buttons to filter by era or year")
+            embed.set_footer(text="Select a song from the dropdown to view details")
         
+        return embed
+    
+    def _build_song_detail_embed(self) -> discord.Embed:
+        """Build detailed view for selected song."""
+        if not self.selected_song:
+            return self.build_embed()
+        
+        song = self.selected_song
+        name = getattr(song, "name", "Unknown")
+        sid = getattr(song, "id", "?")
+        category = getattr(song, "category", "Unknown")
+        length = getattr(song, "length", "?")
+        era_name = getattr(getattr(song, "era", None), "name", "Unknown")
+        
+        embed = discord.Embed(
+            title="🎵 Now Playing" if self.mode == "song_detail" else "Song Details",
+            description=f"**{name}**",
+            colour=discord.Colour.green(),
+        )
+        
+        # Basic info
+        embed.add_field(name="ID", value=f"`{sid}`", inline=True)
+        embed.add_field(name="Public ID", value=getattr(song, "public_id", "N/A") or "N/A", inline=True)
+        embed.add_field(name="Original Key", value=getattr(song, "original_key", "N/A") or "N/A", inline=True)
+        
+        embed.add_field(name="Category", value=category, inline=True)
+        if length:
+            embed.add_field(name="Length", value=length, inline=True)
+        
+        # Era info
+        embed.add_field(name="Era", value=era_name, inline=True)
+        
+        # Credits
+        producers = getattr(song, "producers", "")
+        if producers:
+            embed.add_field(name="Producers", value=producers, inline=False)
+        
+        credited_artists = getattr(song, "credited_artists", "")
+        if credited_artists:
+            embed.add_field(name="Credited Artists", value=credited_artists, inline=False)
+        
+        engineers = getattr(song, "engineers", "")
+        if engineers:
+            embed.add_field(name="Engineers", value=engineers, inline=False)
+        
+        # Recording info
+        recording_locations = getattr(song, "recording_locations", "")
+        if recording_locations:
+            embed.add_field(name="Recording Locations", value=recording_locations, inline=False)
+        
+        record_dates = getattr(song, "record_dates", "")
+        if record_dates:
+            embed.add_field(name="Record Dates", value=record_dates, inline=False)
+        
+        # Leak info
+        leak_date = getattr(song, "date_leaked", "")
+        if leak_date:
+            leak_date = leak_date.replace("Surfaced\n", "").replace("Surfaced", "").strip()
+            embed.add_field(name="Leak Date", value=leak_date, inline=True)
+        
+        leak_type = getattr(song, "leak_type", "")
+        if leak_type:
+            embed.add_field(name="Leak Type", value=leak_type, inline=True)
+        
+        # Image
+        image_url = getattr(song, "image_url", "")
+        if image_url:
+            embed.set_thumbnail(url=image_url)
+        
+        embed.set_footer(text="Use the buttons below to play or add to playlist")
         return embed
 
     def _rebuild_buttons(self):
         """Rebuild navigation buttons."""
         self.clear_items()
         
-        # Row 0: Pagination
-        if self.current_page > 0:
-            prev_btn = ui.Button(label="◀ Previous", style=discord.ButtonStyle.secondary, row=0)
-            prev_btn.callback = lambda i: self._change_page(i, -1)
-            self.add_item(prev_btn)
+        if self.mode == "list":
+            # Song selection dropdown
+            start = self.current_page * self.per_page
+            page_songs = self.all_songs[start:start + self.per_page]
+            
+            if page_songs:
+                select_menu = ui.Select(
+                    placeholder="Select a song to view details...",
+                    min_values=1,
+                    max_values=1,
+                    row=0
+                )
+                
+                for song in page_songs[:25]:  # Discord limit
+                    name = getattr(song, "name", "Unknown")
+                    song_id = getattr(song, "id", "")
+                    leak_date = getattr(song, "date_leaked", "")
+                    leak_date = leak_date.replace("Surfaced\n", "").replace("Surfaced", "").strip()
+                    
+                    label = name[:100] if len(name) <= 100 else name[:97] + "..."
+                    description = f"ID: {song_id}"
+                    if leak_date:
+                        description += f" • {leak_date[:20]}"
+                    
+                    select_menu.add_option(
+                        label=label,
+                        value=str(song_id),
+                        description=description[:100]
+                    )
+                
+                select_menu.callback = self._on_song_select
+                self.add_item(select_menu)
+            
+            # Row 1: Pagination
+            if self.current_page > 0:
+                prev_btn = ui.Button(label="◀ Previous", style=discord.ButtonStyle.secondary, row=1)
+                prev_btn.callback = lambda i: self._change_page(i, -1)
+                self.add_item(prev_btn)
+            
+            if self.current_page < self.total_pages - 1:
+                next_btn = ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, row=1)
+                next_btn.callback = lambda i: self._change_page(i, +1)
+                self.add_item(next_btn)
         
-        if self.current_page < self.total_pages - 1:
-            next_btn = ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, row=0)
-            next_btn.callback = lambda i: self._change_page(i, +1)
-            self.add_item(next_btn)
-        
-        # Row 1: Era filter button
-        era_btn = ui.Button(label="🎵 Filter by Era", style=discord.ButtonStyle.primary, row=1)
-        era_btn.callback = self._show_era_filter
-        self.add_item(era_btn)
-        
-        # Row 1: Year filter button  
-        year_btn = ui.Button(label="📅 Filter by Year", style=discord.ButtonStyle.primary, row=1)
-        year_btn.callback = self._show_year_filter
-        self.add_item(year_btn)
-        
-        # Row 1: Clear filters
-        if self.era_filter or self.year_filter:
-            clear_btn = ui.Button(label="✖ Clear Filters", style=discord.ButtonStyle.danger, row=1)
-            clear_btn.callback = self._clear_filters
-            self.add_item(clear_btn)
+        else:
+            # Song detail mode - action buttons
+            # Row 0: Playback actions
+            play_now_btn = ui.Button(label="▶️ Play Now", style=discord.ButtonStyle.danger, row=0)
+            play_now_btn.callback = self._on_play_now
+            self.add_item(play_now_btn)
+            
+            play_next_btn = ui.Button(label="⏭️ Play Next", style=discord.ButtonStyle.primary, row=0)
+            play_next_btn.callback = self._on_play_next
+            self.add_item(play_next_btn)
+            
+            queue_btn = ui.Button(label="📥 Add to Queue", style=discord.ButtonStyle.secondary, row=0)
+            queue_btn.callback = self._on_queue
+            self.add_item(queue_btn)
+            
+            # Row 1: Other actions
+            playlist_btn = ui.Button(label="➕ Playlist", style=discord.ButtonStyle.success, row=1)
+            playlist_btn.callback = self._on_add_to_playlist
+            self.add_item(playlist_btn)
+            
+            lyrics_btn = ui.Button(label="📝 Lyrics", style=discord.ButtonStyle.secondary, row=1)
+            lyrics_btn.callback = self._on_lyrics
+            self.add_item(lyrics_btn)
+            
+            snippets_btn = ui.Button(label="🎬 Snippets", style=discord.ButtonStyle.secondary, row=1)
+            snippets_btn.callback = self._on_snippets
+            self.add_item(snippets_btn)
+            
+            back_btn = ui.Button(label="⬅ Back", style=discord.ButtonStyle.danger, row=1)
+            back_btn.callback = self._on_back
+            self.add_item(back_btn)
 
     async def _change_page(self, interaction: discord.Interaction, delta: int):
         """Handle page navigation."""
@@ -195,3 +325,96 @@ class LeakTimelineView(ui.View):
         self._rebuild_buttons()
         embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
+    
+    async def _on_song_select(self, interaction: discord.Interaction):
+        """Handle song selection from dropdown."""
+        selected_id = int(interaction.data["values"][0])
+        
+        # Find the selected song
+        for song in self.all_songs:
+            if getattr(song, "id", None) == selected_id:
+                self.selected_song = song
+                break
+        
+        self.mode = "song_detail"
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    async def _on_back(self, interaction: discord.Interaction):
+        """Return to list view."""
+        self.mode = "list"
+        self.selected_song = None
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    async def _on_play_now(self, interaction: discord.Interaction):
+        """Play selected song now."""
+        if not self.selected_song or not self._queue_fn:
+            await interaction.response.defer()
+            return
+        
+        song_id = getattr(self.selected_song, "id", None)
+        if song_id:
+            await self._queue_fn(self.ctx, song_id, position="now")
+            await interaction.response.send_message(f"Playing **{getattr(self.selected_song, 'name', 'song')}** now!", ephemeral=True)
+            helpers.schedule_interaction_deletion(interaction, 3)
+    
+    async def _on_play_next(self, interaction: discord.Interaction):
+        """Queue selected song to play next."""
+        if not self.selected_song or not self._queue_fn:
+            await interaction.response.defer()
+            return
+        
+        song_id = getattr(self.selected_song, "id", None)
+        if song_id:
+            await self._queue_fn(self.ctx, song_id, position="next")
+            await interaction.response.send_message(f"**{getattr(self.selected_song, 'name', 'song')}** will play next!", ephemeral=True)
+            helpers.schedule_interaction_deletion(interaction, 3)
+    
+    async def _on_queue(self, interaction: discord.Interaction):
+        """Add selected song to end of queue."""
+        if not self.selected_song or not self._queue_fn:
+            await interaction.response.defer()
+            return
+        
+        song_id = getattr(self.selected_song, "id", None)
+        if song_id:
+            await self._queue_fn(self.ctx, song_id, position="end")
+            await interaction.response.send_message(f"Added **{getattr(self.selected_song, 'name', 'song')}** to queue!", ephemeral=True)
+            helpers.schedule_interaction_deletion(interaction, 3)
+    
+    async def _on_add_to_playlist(self, interaction: discord.Interaction):
+        """Add song to user's playlist."""
+        await interaction.response.send_message(
+            "Playlist management coming soon! Use `/jw pl add <name> <song_id>` for now.",
+            ephemeral=True
+        )
+        helpers.schedule_interaction_deletion(interaction, 5)
+    
+    async def _on_lyrics(self, interaction: discord.Interaction):
+        """Show lyrics for selected song."""
+        if not self.selected_song:
+            await interaction.response.defer()
+            return
+        
+        name = getattr(self.selected_song, "name", "Unknown")
+        await interaction.response.send_message(
+            f"Lyrics for **{name}** - Search on Genius.com",
+            ephemeral=True
+        )
+        helpers.schedule_interaction_deletion(interaction, 5)
+    
+    async def _on_snippets(self, interaction: discord.Interaction):
+        """Show snippets for selected song."""
+        if not self.selected_song:
+            await interaction.response.defer()
+            return
+        
+        name = getattr(self.selected_song, "name", "Unknown")
+        await interaction.response.send_message(
+            f"Snippets for **{name}** - Check YouTube or SoundCloud",
+            ephemeral=True
+        )
+        helpers.schedule_interaction_deletion(interaction, 5)
