@@ -1,0 +1,14 @@
+{
+  "123456789": {
+    "total_plays": 42,
+    "total_seconds": 8400,
+    "songs": {
+      "Lucid Dreams": 5,
+      "All Girls Are The Same": 3
+    },
+    "eras": {
+      "Goodbye & Good Riddance": 10,
+      "Death Race For Love": 8
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "123456789": {
+    "Favorites": [
+      {
+        "title": "Lucid Dreams",
+        "song_id": "example-song-id",
+        "metadata": {}
+      }
+    ],
+    "Chill Vibes": []
+  }
+}
