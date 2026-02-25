@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import discord
 from discord.ext import commands, tasks
 
-from constants import AUTO_LEAVE_IDLE_SECONDS, NOTHING_PLAYING
+from constants import AUTO_LEAVE_IDLE_SECONDS, BOT_VERSION, NOTHING_PLAYING
 from exceptions import JuiceWRLDAPIError, NotFoundError
 import helpers
 import state
@@ -23,14 +23,21 @@ _FFMPEG_OPTIONS = "-vn"
 class PlaybackCog(commands.Cog):
     """Voice playback, radio, queue management, and related commands."""
 
+    # Rotating idle status messages.
+    _IDLE_STATUSES: List[str] = []
+    _idle_status_index: int = 0
+
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        PlaybackCog._IDLE_STATUSES = [f"v{BOT_VERSION}", 'try "/jw"', "Idle play me"]
         self._update_player_messages.start()
         self._idle_auto_leave.start()
+        self._rotate_idle_presence.start()
 
     def cog_unload(self) -> None:
         self._update_player_messages.cancel()
         self._idle_auto_leave.cancel()
+        self._rotate_idle_presence.cancel()
 
     async def _delete_now_playing_message(self, guild_id: int) -> None:
         """Best-effort deletion of the tracked Now Playing message for a guild."""
@@ -302,9 +309,10 @@ class PlaybackCog(commands.Cog):
         if title and title != "Nothing playing":
             now = time.time()
             # Build timestamps for a live elapsed/remaining timer.
-            timestamps: Dict[str, Any] = {"start": now}
+            # Discord Gateway expects millisecond epoch timestamps.
+            timestamps: Dict[str, Any] = {"start": int(now * 1000)}
             if duration_seconds and duration_seconds > 0:
-                timestamps["end"] = now + duration_seconds
+                timestamps["end"] = int((now + duration_seconds) * 1000)
 
             # Compose the "state" line: era + category.
             meta = metadata or {}
@@ -328,10 +336,11 @@ class PlaybackCog(commands.Cog):
             if len(activity_name) > 128:
                 activity_name = activity_name[:125] + "..."
 
-            # Album art: use Rich Presence Art Asset uploaded in Developer Portal.
-            # Upload an image named "juicewrld-cover" in your app's Rich Presence assets.
+            # Album art: prefer the song's own image_url; fall back to the
+            # app-level Rich Presence asset "juicewrld-cover" from Developer Portal.
+            image_url = meta.get("image_url")
             assets: Dict[str, str] = {
-                "large_image": "juicewrld-cover",
+                "large_image": image_url or "juicewrld-cover",
                 "large_text": title,
             }
 
@@ -366,7 +375,9 @@ class PlaybackCog(commands.Cog):
                 buttons=buttons,
             )
         else:
-            activity = discord.Activity(type=discord.ActivityType.playing, name="Juice WRLD Radio")
+            # Use current rotating idle status.
+            idle_name = self._IDLE_STATUSES[self._idle_status_index % len(self._IDLE_STATUSES)]
+            activity = discord.Activity(type=discord.ActivityType.playing, name=idle_name)
         asyncio.create_task(self.bot.change_presence(activity=activity))
 
     async def _send_player_controls(
@@ -534,9 +545,10 @@ class PlaybackCog(commands.Cog):
                 voice.stop()
             await voice.disconnect()
 
-        # Clear the bot's Discord activity status.
+        # Clear the bot's Discord activity status to idle rotation.
+        idle_name = self._IDLE_STATUSES[self._idle_status_index % len(self._IDLE_STATUSES)]
         asyncio.create_task(
-            self.bot.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Juice WRLD Radio"))
+            self.bot.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=idle_name))
         )
 
         # Delete the Now Playing message after a brief moment.
@@ -582,6 +594,28 @@ class PlaybackCog(commands.Cog):
 
     @_idle_auto_leave.before_loop
     async def _before_idle_auto_leave(self) -> None:
+        await self.bot.wait_until_ready()
+
+
+    @tasks.loop(seconds=15)
+    async def _rotate_idle_presence(self) -> None:
+        """Rotate the idle status message every 15 seconds when not playing."""
+
+        # Check if any guild is actively playing.
+        for guild in self.bot.guilds:
+            voice: Optional[discord.VoiceClient] = guild.voice_client  # type: ignore[assignment]
+            if voice and voice.is_connected() and (voice.is_playing() or voice.is_paused()):
+                return  # Something is playing; the song presence is active.
+
+        # Nothing playing anywhere — rotate idle status.
+        PlaybackCog._idle_status_index = (self._idle_status_index + 1) % len(self._IDLE_STATUSES)
+        idle_name = self._IDLE_STATUSES[self._idle_status_index]
+        activity = discord.Activity(type=discord.ActivityType.playing, name=idle_name)
+        await self.bot.change_presence(activity=activity)
+
+
+    @_rotate_idle_presence.before_loop
+    async def _before_rotate_idle(self) -> None:
         await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
