@@ -292,13 +292,13 @@ class AdminCog(commands.Cog):
             colour=discord.Colour.green(),
         )
         embed.add_field(
-            name="Recent Updates (v3.2.0)",
+            name="Recent Updates (v3.3.0)",
             value=(
-                "• 📜 History — `!jw history` / `/jw history` shows last 10 songs played\n"
-                "• 📤 Playlist sharing — `!jw pl share` posts a playlist publicly for others\n"
-                "• 📥 Playlist import — `!jw pl import @user <name>` copies another user's playlist\n"
-                "• 📥 Queue button — search results now have a Queue button (doesn't interrupt radio)\n"
-                "• ⚡ Play/queue refactor — cleaner internal play pipeline"
+                "• ⏰ SOTD scheduling — `!jw sotdtime` sets announcement time (Pacific Time)\n"
+                "• 🎵 View SOTD — `/jw sotd` lets anyone check the current Song of the Day\n"
+                "• 📀 Interactive eras — Select menu to view detailed era info with descriptions\n"
+                "• 📊 Era stats — Shows time frame, description, and song count for each era\n"
+                "• 🕒 Configurable timing — SOTD posts at your preferred time daily"
             ),
             inline=False,
         )
