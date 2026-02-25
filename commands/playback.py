@@ -302,9 +302,10 @@ class PlaybackCog(commands.Cog):
         if title and title != "Nothing playing":
             now = time.time()
             # Build timestamps for a live elapsed/remaining timer.
-            timestamps: Dict[str, Any] = {"start": now}
+            # Discord Gateway expects millisecond epoch timestamps.
+            timestamps: Dict[str, Any] = {"start": int(now * 1000)}
             if duration_seconds and duration_seconds > 0:
-                timestamps["end"] = now + duration_seconds
+                timestamps["end"] = int((now + duration_seconds) * 1000)
 
             # Compose the "state" line: era + category.
             meta = metadata or {}
@@ -328,10 +329,11 @@ class PlaybackCog(commands.Cog):
             if len(activity_name) > 128:
                 activity_name = activity_name[:125] + "..."
 
-            # Album art: use Rich Presence Art Asset uploaded in Developer Portal.
-            # Upload an image named "juicewrld-cover" in your app's Rich Presence assets.
+            # Album art: prefer the song's own image_url; fall back to the
+            # app-level Rich Presence asset "juicewrld-cover" from Developer Portal.
+            image_url = meta.get("image_url")
             assets: Dict[str, str] = {
-                "large_image": "juicewrld-cover",
+                "large_image": image_url or "juicewrld-cover",
                 "large_text": title,
             }
 
