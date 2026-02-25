@@ -10,6 +10,8 @@ from discord.ext import commands
 
 import helpers
 import state
+from constants import GENIUS_API_TOKEN
+from genius_client import GeniusClient
 
 
 class LeakTimelineView(ui.View):
@@ -402,9 +404,21 @@ class LeakTimelineView(ui.View):
         name = getattr(self.selected_song, "name", "Unknown")
         lyrics = getattr(self.selected_song, "lyrics", None)
         
+        # If no lyrics in API, try Genius as fallback
+        if not lyrics and GENIUS_API_TOKEN:
+            await interaction.response.defer(ephemeral=True)
+            
+            genius = GeniusClient(GENIUS_API_TOKEN)
+            try:
+                genius_lyrics = await genius.get_song_lyrics(name)
+                if genius_lyrics:
+                    lyrics = genius_lyrics
+            finally:
+                await genius.close()
+        
         if not lyrics:
             await interaction.response.send_message(
-                f"No lyrics stored for **{name}**.",
+                f"No lyrics found for **{name}**.",
                 ephemeral=True
             )
             helpers.schedule_interaction_deletion(interaction, 5)
@@ -418,6 +432,9 @@ class LeakTimelineView(ui.View):
             description=lyrics_text,
             colour=discord.Colour.blue()
         )
+        
+        if not getattr(self.selected_song, "lyrics", None):
+            embed.set_footer(text="Lyrics from Genius")
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
         helpers.schedule_interaction_deletion(interaction, 60)

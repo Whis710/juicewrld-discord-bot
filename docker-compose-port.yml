@@ -12,6 +12,7 @@
          - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET}
          - LINKED_ROLES_URL=${LINKED_ROLES_URL}
          - JUICEWRLD_API_BASE_URL=${JUICE_BASE_URL:-https://juicewrldapi.com}
+         - GENIUS_API_TOKEN=${GENIUS_API_TOKEN:-}
        volumes:
          - /home/bryan/projects/juicewrld-discord-bot/bot.py:/app/bot.py:ro
          - /home/bryan/projects/juicewrld-discord-bot/playlists.json:/app/playlists.json:rw

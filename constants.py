@@ -23,3 +23,4 @@ BOT_BUILD_DATE = "2026-02-25"
 # Environment
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 JUICEWRLD_API_BASE_URL = os.getenv("JUICEWRLD_API_BASE_URL", "https://juicewrldapi.com")
+GENIUS_API_TOKEN = os.getenv("GENIUS_API_TOKEN")  # Optional: for lyrics fallback
