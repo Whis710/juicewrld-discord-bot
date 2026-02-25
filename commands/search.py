@@ -22,6 +22,11 @@ class SearchCog(commands.Cog):
         """Return the PlaybackCog.play_song method for view callbacks."""
         return self.bot.get_cog("PlaybackCog").play_song
 
+    @property
+    def _queue_fn(self):
+        """Return the PlaybackCog.queue_song method for view callbacks."""
+        return self.bot.get_cog("PlaybackCog").queue_song
+
     @commands.command(name="eras")
     async def list_eras(self, ctx: commands.Context):
         """List all Juice WRLD musical eras."""
@@ -68,7 +73,7 @@ class SearchCog(commands.Cog):
             return
 
         total = results.get("count") if isinstance(results, dict) else None
-        view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total, play_fn=self._play_fn)
+        view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total, play_fn=self._play_fn, queue_fn=self._queue_fn)
         embed = view.build_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
@@ -96,7 +101,7 @@ class SearchCog(commands.Cog):
             await helpers.send_temporary(ctx, f"No similar songs found for **{title}**.")
             return
 
-        view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top), play_fn=self._play_fn)
+        view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top), play_fn=self._play_fn, queue_fn=self._queue_fn)
         embed = view.build_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
@@ -131,7 +136,7 @@ class SearchCog(commands.Cog):
 
         total = results.get("count") if isinstance(results, dict) else None
 
-        view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total, play_fn=self._play_fn)
+        view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total, play_fn=self._play_fn, queue_fn=self._queue_fn)
         embed = view.build_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
@@ -160,9 +165,43 @@ class SearchCog(commands.Cog):
                 await ctx.send(f"Error while fetching song: {e}")
                 return
 
-        view = SingleSongResultView(ctx=ctx, song=song, query=song_id, play_fn=self._play_fn)
+        view = SingleSongResultView(ctx=ctx, song=song, query=song_id, play_fn=self._play_fn, queue_fn=self._queue_fn)
         embed = view.build_embed()
         await ctx.send(embed=embed, view=view)
+
+
+    @commands.command(name="history")
+    async def play_history(self, ctx: commands.Context):
+        """Show the last 10 songs played in this server."""
+
+        if not ctx.guild:
+            await helpers.send_temporary(ctx, "This command can only be used in a server.")
+            return
+
+        history = state.guild_history.get(ctx.guild.id, [])
+        if not history:
+            await helpers.send_temporary(ctx, "No songs have been played in this server yet.")
+            return
+
+        lines = []
+        for i, entry in enumerate(history, 1):
+            title = entry.get("title", "Unknown")
+            meta = entry.get("metadata") or {}
+            era_val = meta.get("era")
+            era_text = ""
+            if isinstance(era_val, dict) and era_val.get("name"):
+                era_text = f" · {era_val['name']}"
+            elif era_val:
+                era_text = f" · {era_val}"
+            lines.append(f"`{i}.` {title}{era_text}")
+
+        embed = discord.Embed(
+            title="Recently Played",
+            description="\n".join(lines),
+            colour=discord.Colour.purple(),
+        )
+        embed.set_footer(text=f"Last {len(history)} song(s) in this server")
+        await helpers.send_temporary(ctx, embed=embed, delay=30)
 
 
 async def setup(bot: commands.Bot) -> None:

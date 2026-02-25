@@ -265,14 +265,16 @@ class PlaybackCog(commands.Cog):
         guild_id = ctx.guild.id
         existing = state.guild_now_playing.get(guild_id, {})
     
-        # Save current song as previous (if there was one playing)
+        # Save current song as previous and push to history.
         if existing.get("title") and existing.get("title") != "Nothing playing":
-            state.guild_previous_song[guild_id] = {
+            prev_entry = {
                 "title": existing.get("title"),
                 "path": existing.get("path"),
                 "metadata": existing.get("metadata", {}),
                 "duration_seconds": existing.get("duration_seconds"),
             }
+            state.guild_previous_song[guild_id] = prev_entry
+            state.push_history(guild_id, prev_entry)
     
         existing.update(
             {
@@ -721,7 +723,15 @@ class PlaybackCog(commands.Cog):
 
     @commands.command(name="play")
     async def play_song(self, ctx: commands.Context, song_id: str):
-        """Play a Juice WRLD song in the caller's voice channel by song ID.
+        """Play a Juice WRLD song in the caller's voice channel by song ID."""
+        await self._play_song_impl(ctx, song_id, disable_radio=True)
+
+    async def queue_song(self, ctx: commands.Context, song_id: str):
+        """Queue a song without disabling radio mode (used by search Queue buttons)."""
+        await self._play_song_impl(ctx, song_id, disable_radio=False)
+
+    async def _play_song_impl(self, ctx: commands.Context, song_id: str, *, disable_radio: bool = True):
+        """Core implementation for play/queue a song by ID.
 
         The song ID must be numeric; if it isn't, we show a helpful
         error message instead of raising a conversion error.
@@ -735,9 +745,10 @@ class PlaybackCog(commands.Cog):
         # If radio is currently on, disable it; the requested song will
         # either play next (if something else is already playing) or
         # immediately if nothing is playing.
-        radio_was_on = self._disable_radio_if_active(ctx)
-        if radio_was_on:
-            await helpers.send_temporary(ctx, "Radio mode disabled because you requested a specific song.")
+        if disable_radio:
+            radio_was_on = self._disable_radio_if_active(ctx)
+            if radio_was_on:
+                await helpers.send_temporary(ctx, "Radio mode disabled because you requested a specific song.")
 
         # Support a short debug suffix: e.g. "123d" will enable debug mode
         # and use song ID 123. This keeps the command compact.

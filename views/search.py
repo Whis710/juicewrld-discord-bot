@@ -27,12 +27,14 @@ class SingleSongResultView(discord.ui.View):
         song: Any,
         query: str,
         play_fn: Optional[Callable] = None,
+        queue_fn: Optional[Callable] = None,
     ) -> None:
         super().__init__(timeout=60)
         self.ctx = ctx
         self.song = song
         self.query = query
         self._play_fn = play_fn
+        self._queue_fn = queue_fn
         self.mode = "main"  # "main", "info", or "select_playlist"
         self.playlist_items: List[tuple] = []  # For playlist selection mode
         self.per_page = 5
@@ -148,10 +150,15 @@ class SingleSongResultView(discord.ui.View):
         self.clear_items()
         
         if self.mode == "main":
-            # Main mode: Play, Add to Playlist, and Info buttons
+            # Main mode: Play, Queue, Add to Playlist, and Info buttons
             play_btn = discord.ui.Button(label="▶️ Play", style=discord.ButtonStyle.primary, row=0)
             play_btn.callback = self._on_play
             self.add_item(play_btn)
+
+            if self._queue_fn:
+                queue_btn = discord.ui.Button(label="📥 Queue", style=discord.ButtonStyle.secondary, row=0)
+                queue_btn.callback = self._on_queue
+                self.add_item(queue_btn)
             
             add_btn = discord.ui.Button(label="➕ Add to Playlist", style=discord.ButtonStyle.success, row=0)
             add_btn.callback = self._on_add_to_playlist
@@ -235,6 +242,31 @@ class SingleSongResultView(discord.ui.View):
             pass
 
         self.stop()
+
+    async def _on_queue(self, interaction: discord.Interaction) -> None:
+        """Handle Queue button press — add to queue without disabling radio."""
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the user who ran this search can use these buttons.",
+                ephemeral=True,
+            )
+            return
+
+        song_id = getattr(self.song, "id", None)
+        if song_id is None:
+            await interaction.response.send_message(
+                "This song does not have a valid ID to queue.",
+                ephemeral=True,
+            )
+            return
+
+        name = getattr(self.song, "name", getattr(self.song, "title", "Unknown"))
+        await interaction.response.defer(ephemeral=True)
+        await self._queue_fn(self.ctx, str(song_id))
+
+        await helpers.send_ephemeral_temporary(
+            interaction, f"📥 Added `{name}` to queue."
+        )
 
     async def _on_add_to_playlist(self, interaction: discord.Interaction) -> None:
         """Handle Add to Playlist button press."""
@@ -464,12 +496,14 @@ class SearchPaginationView(discord.ui.View):
         total_count: Optional[int] = None,
         is_ephemeral: bool = False,
         play_fn: Optional[Callable] = None,
+        queue_fn: Optional[Callable] = None,
     ) -> None:
         super().__init__(timeout=60)
         self.ctx = ctx
         self.songs = songs
         self.query = query
         self._play_fn = play_fn
+        self._queue_fn = queue_fn
         self.per_page = 5
         self.current_page = 0
         self.total_pages = max(1, math.ceil(len(songs) / self.per_page))
@@ -766,6 +800,38 @@ class SearchPaginationView(discord.ui.View):
 
         self.stop()
 
+    async def _on_queue_selected(self, interaction: discord.Interaction) -> None:
+        """Handle Queue button for selected song — add to queue without disabling radio."""
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the user who ran this search can use these buttons.",
+                ephemeral=True,
+            )
+            return
+
+        if not self.selected_song:
+            await interaction.response.send_message(
+                "No song selected.",
+                ephemeral=True,
+            )
+            return
+
+        song_id = getattr(self.selected_song, "id", None)
+        if song_id is None:
+            await interaction.response.send_message(
+                "This result does not have a valid song ID to queue.",
+                ephemeral=True,
+            )
+            return
+
+        name = getattr(self.selected_song, "name", getattr(self.selected_song, "title", "Unknown"))
+        await interaction.response.defer(ephemeral=True)
+        await self._queue_fn(self.ctx, str(song_id))
+
+        await helpers.send_ephemeral_temporary(
+            interaction, f"📥 Added `{name}` to queue."
+        )
+
     async def _on_add_to_playlist_selected(self, interaction: discord.Interaction) -> None:
         """Handle Add to Playlist button for selected song."""
         if interaction.user.id != self.ctx.author.id:
@@ -920,20 +986,25 @@ class SearchPaginationView(discord.ui.View):
                 self.add_item(btn)
         
         elif self.mode == "song_selected":
-            # Song selected mode: Play, Add to Playlist, Info, Back buttons
+            # Song selected mode: Play, Queue, Add to Playlist, Info, Back buttons
             play_btn = discord.ui.Button(label="▶️ Play", style=discord.ButtonStyle.primary, row=0)
             play_btn.callback = self._on_play_selected
             self.add_item(play_btn)
+
+            if self._queue_fn:
+                queue_btn = discord.ui.Button(label="📥 Queue", style=discord.ButtonStyle.secondary, row=0)
+                queue_btn.callback = self._on_queue_selected
+                self.add_item(queue_btn)
             
-            add_btn = discord.ui.Button(label="➕ Add to Playlist", style=discord.ButtonStyle.success, row=0)
+            add_btn = discord.ui.Button(label="➕ Add to Playlist", style=discord.ButtonStyle.success, row=1)
             add_btn.callback = self._on_add_to_playlist_selected
             self.add_item(add_btn)
             
-            info_btn = discord.ui.Button(label="ℹ️ Info", style=discord.ButtonStyle.secondary, row=0)
+            info_btn = discord.ui.Button(label="ℹ️ Info", style=discord.ButtonStyle.secondary, row=1)
             info_btn.callback = self._on_info_selected
             self.add_item(info_btn)
             
-            back_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.danger, row=0)
+            back_btn = discord.ui.Button(label="⬅ Back", style=discord.ButtonStyle.danger, row=1)
             back_btn.callback = self._on_back_to_list
             self.add_item(back_btn)
         

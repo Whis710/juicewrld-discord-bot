@@ -33,6 +33,10 @@ guild_previous_song: Dict[int, Dict[str, Any]] = {}
 # Pre-fetched next radio song per guild.
 guild_radio_next: Dict[int, Dict[str, Any]] = {}
 
+# Recently played songs per guild (newest first, max HISTORY_MAX_LENGTH).
+guild_history: Dict[int, List[Dict[str, Any]]] = {}
+HISTORY_MAX_LENGTH = 10
+
 # Timestamp of last voice activity per guild (for idle auto-leave).
 guild_last_activity: Dict[int, float] = {}
 
@@ -196,6 +200,14 @@ def ensure_queue(guild_id: int) -> List[Dict[str, Any]]:
 def touch_activity(guild_id: int) -> None:
     """Update the last-activity timestamp for a guild."""
     guild_last_activity[guild_id] = time.time()
+
+
+def push_history(guild_id: int, entry: Dict[str, Any]) -> None:
+    """Push a song entry to the guild's play history (newest first)."""
+    history = guild_history.setdefault(guild_id, [])
+    history.insert(0, entry)
+    if len(history) > HISTORY_MAX_LENGTH:
+        del history[HISTORY_MAX_LENGTH:]
 
 
 # ── Explicit initialisation ───────────────────────────────────────

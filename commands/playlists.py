@@ -9,6 +9,7 @@ from discord.ext import commands
 from exceptions import JuiceWRLDAPIError, NotFoundError
 import helpers
 import state
+from views.playlist import SharedPlaylistView
 
 
 class PlaylistsCog(commands.Cog):
@@ -321,6 +322,74 @@ class PlaylistsCog(commands.Cog):
         title = removed.get("name") or removed.get("id") or "Unknown track"
         await ctx.send(f"Removed `{title}` (index {index}) from playlist `{name}`.")
 
+
+    @playlist_group.command(name="share")
+    async def playlist_share(self, ctx: commands.Context, *, name: str):
+        """Share a playlist publicly in the channel so others can copy or queue it."""
+
+        playlists = state.user_playlists.get(ctx.author.id) or {}
+        playlist = playlists.get(name)
+        if playlist is None:
+            await ctx.send(f"No playlist named `{name}` found.")
+            return
+
+        if not playlist:
+            await ctx.send(f"Playlist `{name}` is empty.")
+            return
+
+        view = SharedPlaylistView(
+            ctx=ctx,
+            owner=ctx.author,
+            playlist_name=name,
+            tracks=list(playlist),
+        )
+        embed = view.build_embed()
+        msg = await ctx.send(embed=embed, view=view)
+        view.message = msg
+
+
+    @playlist_group.command(name="import")
+    async def playlist_import(self, ctx: commands.Context, user: discord.Member, *, name: str):
+        """Copy another user's playlist to your own playlists.
+
+        Usage: !jw pl import @user <playlist_name>
+        """
+
+        source_playlists = state.user_playlists.get(user.id) or {}
+        source = source_playlists.get(name)
+        if source is None:
+            await ctx.send(f"{user.display_name} doesn't have a playlist named `{name}`.")
+            return
+
+        if not source:
+            await ctx.send(f"{user.display_name}'s playlist `{name}` is empty.")
+            return
+
+        my_playlists = state.get_or_create_user_playlists(ctx.author.id)
+
+        # Generate a unique name if there's a conflict.
+        new_name = name
+        counter = 1
+        while new_name in my_playlists:
+            new_name = f"{name} ({counter})"
+            counter += 1
+
+        copied = [
+            {
+                "id": t.get("id"),
+                "name": t.get("name"),
+                "path": t.get("path"),
+                "metadata": t.get("metadata", {}),
+                "added_at": time.time(),
+            }
+            for t in source
+        ]
+        my_playlists[new_name] = copied
+        state.save_user_playlists_to_disk()
+
+        await ctx.send(
+            f"Imported `{name}` from {user.display_name} as `{new_name}` ({len(copied)} track(s))."
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -172,6 +172,8 @@ class AdminCog(commands.Cog):
             "`!jw pl delete <name>` — Delete a playlist.",
             "`!jw pl rename <old> <new>` — Rename a playlist.",
             "`!jw pl remove <name> <index>` — Remove a track by index.",
+            "`!jw pl share <name>` — Share a playlist publicly in the channel.",
+            "`!jw pl import @user <name>` — Copy another user's playlist.",
         ]
         embed.add_field(name="Playlists", value="\n".join(playlist_lines), inline=False)
 
@@ -180,6 +182,7 @@ class AdminCog(commands.Cog):
             "`!jw era <name>` — Browse songs from a specific era.",
             "`!jw similar` — Find songs similar to the currently playing track.",
             "`!jw stats` — View your personal listening stats.",
+            "`!jw history` — Show the last 10 songs played in this server.",
         ]
         embed.add_field(name="Browse & Discover", value="\n".join(browse_lines), inline=False)
 
@@ -257,14 +260,13 @@ class AdminCog(commands.Cog):
             colour=discord.Colour.green(),
         )
         embed.add_field(
-            name="Recent Updates (v3.1.0)",
+            name="Recent Updates (v3.2.0)",
             value=(
-                "• 🏗️ Modular refactor — bot split into Cogs for cleaner code\n"
-                "• 🔧 Session management — shared HTTP sessions, proper cleanup on shutdown\n"
-                "• 📋 Paginated playlists — `!jw pl show` now uses embeds instead of truncating\n"
-                "• 🔇 Ephemeral slash commands — `/jw radio` and `/jw stop` no longer post publicly\n"
-                "• ⚡ Player performance — cached messages reduce API calls\n"
-                "• 🐛 Bug fixes — SOTD play button, context menu play, radio error logging"
+                "• 📜 History — `!jw history` / `/jw history` shows last 10 songs played\n"
+                "• 📤 Playlist sharing — `!jw pl share` posts a playlist publicly for others\n"
+                "• 📥 Playlist import — `!jw pl import @user <name>` copies another user's playlist\n"
+                "• 📥 Queue button — search results now have a Queue button (doesn't interrupt radio)\n"
+                "• ⚡ Play/queue refactor — cleaner internal play pipeline"
             ),
             inline=False,
         )
