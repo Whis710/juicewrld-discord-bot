@@ -649,6 +649,16 @@ class PlayerView(discord.ui.View):
         if voice and (voice.is_playing() or voice.is_paused()):
             # Pre-fetch so "Up Next" is ready when the current song ends
             await self._prefetch_fn(guild.id)
+            # Refresh the player embed to show radio state and up-next song
+            info = state.guild_now_playing.get(guild.id, {})
+            await self._send_controls_fn(
+                self.ctx,
+                title=info.get("title", "Unknown"),
+                path=info.get("path"),
+                is_radio=True,
+                metadata=info.get("metadata", {}),
+                duration_seconds=info.get("duration_seconds"),
+            )
             await helpers.send_ephemeral_temporary(interaction, "Radio enabled. Current song will finish, then radio starts.")
         else:
             # Nothing playing; start radio immediately
