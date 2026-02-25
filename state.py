@@ -50,10 +50,16 @@ user_playlists: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
 #              "songs": { song_name: count }, "eras": { era_name: count } } }
 user_listening_stats: Dict[int, Dict[str, Any]] = {}
 
-# ── SOTD config ──────────────────────────────────────────────────────
+# ── SOTD config ──────────────────────────────────────────────────
 
 # { guild_id_str: channel_id }
 sotd_config: Dict[str, int] = {}
+
+# SOTD announcement time (hour:minute in UTC)
+sotd_time: Dict[str, int] = {"hour": 12, "minute": 0}
+
+# Current SOTD song data (refreshed daily)
+current_sotd: Optional[Dict[str, Any]] = None
 
 
 # ── Playlist helpers ─────────────────────────────────────────────────
@@ -168,21 +174,28 @@ def record_listen(
 
 def load_sotd_config() -> None:
     """Load SOTD channel config from disk."""
-    global sotd_config
+    global sotd_config, sotd_time, current_sotd
     try:
         with open(SOTD_CONFIG_FILE, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except (FileNotFoundError, Exception):
         return
     if isinstance(raw, dict):
-        sotd_config = raw
+        sotd_config = raw.get("channels", raw) if "channels" in raw else raw
+        sotd_time = raw.get("time", {"hour": 12, "minute": 0})
+        current_sotd = raw.get("current_song")
 
 
 def save_sotd_config() -> None:
     """Persist SOTD channel config to disk."""
     try:
+        data = {
+            "channels": sotd_config,
+            "time": sotd_time,
+            "current_song": current_sotd,
+        }
         with open(SOTD_CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(sotd_config, f, ensure_ascii=False)
+            json.dump(data, f, ensure_ascii=False)
     except Exception:
         return
 

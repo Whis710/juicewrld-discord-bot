@@ -482,24 +482,62 @@ class SlashCog(commands.GroupCog, group_name="jw"):
 
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="sotd", description="Set the Song of the Day channel (admin).")
-    @app_commands.describe(channel="The text channel for daily Song of the Day posts")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def slash_sotd(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
-        """Ephemeral equivalent of !jw sotd."""
+    @app_commands.command(name="sotd", description="View the current Song of the Day.")
+    async def slash_sotd_view(self, interaction: discord.Interaction) -> None:
+        """View the current Song of the Day."""
 
-        guild = interaction.guild
-        if not guild:
+        if not state.current_sotd:
             await interaction.response.send_message(
-                "This command can only be used in a server.", ephemeral=True
+                "No Song of the Day has been posted yet today. Check back later!",
+                ephemeral=True,
             )
             return
 
-        state.sotd_config[str(guild.id)] = channel.id
-        state.save_sotd_config()
-        await interaction.response.send_message(
-            f"Song of the Day will be posted daily in {channel.mention}.", ephemeral=True
+        song_data = state.current_sotd
+        title = song_data.get("title", "Unknown")
+        metadata = song_data.get("metadata", {})
+        duration_seconds = song_data.get("duration_seconds")
+
+        embed = discord.Embed(
+            title="🎵 Song of the Day",
+            description=f"**{title}**",
+            colour=discord.Colour.gold(),
         )
+        
+        image_url = metadata.get("image_url")
+        if image_url:
+            embed.set_thumbnail(url=image_url)
+        
+        if metadata.get("category"):
+            embed.add_field(name="Category", value=str(metadata["category"]), inline=True)
+        
+        era_val = metadata.get("era")
+        if era_val:
+            era_text = era_val.get("name") if isinstance(era_val, dict) else str(era_val)
+            if era_text:
+                embed.add_field(name="Era", value=era_text, inline=True)
+        
+        producers = metadata.get("producers")
+        if producers:
+            embed.add_field(name="Producers", value=str(producers), inline=True)
+        
+        if duration_seconds:
+            m, s = divmod(duration_seconds, 60)
+            embed.add_field(name="Length", value=f"{m}:{s:02d}", inline=True)
+        
+        embed.set_footer(text="Press Play to listen!")
+
+        # Import the view here to avoid circular imports
+        from views.sotd import SongOfTheDayView
+        playback = self._playback
+        view = SongOfTheDayView(
+            song_data=song_data,
+            queue_fn=playback._queue_or_play_now,
+            stream_fn=playback._get_fresh_stream_url,
+        )
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        helpers.schedule_interaction_deletion(interaction, 60)
 
 
     @app_commands.command(name="history", description="Show the last 10 songs played in this server.")

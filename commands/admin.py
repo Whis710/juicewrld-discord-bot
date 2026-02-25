@@ -51,9 +51,20 @@ class AdminCog(commands.Cog):
         """Lazy reference to PlaybackCog for cross-cog calls."""
         return self.bot.get_cog("PlaybackCog")
 
-    @tasks.loop(time=datetime.time(hour=12, minute=0, tzinfo=datetime.timezone.utc))
+    @tasks.loop(hours=1)
     async def _song_of_the_day_task(self) -> None:
-        """Post a random Song of the Day to configured channels at noon UTC daily."""
+        """Post a random Song of the Day to configured channels at the scheduled time daily."""
+        
+        # Check if it's time to post SOTD (times are stored in PST/PDT)
+        import zoneinfo
+        pacific_tz = zoneinfo.ZoneInfo("America/Los_Angeles")
+        now_pacific = datetime.datetime.now(pacific_tz)
+        target_hour = state.sotd_time.get("hour", 12)
+        target_minute = state.sotd_time.get("minute", 0)
+        
+        # Only run if we're in the target hour and within the first minute window
+        if now_pacific.hour != target_hour or now_pacific.minute != target_minute:
+            return
 
         if not state.sotd_config:
             print("[sotd] No channels configured — skipping.")
@@ -69,6 +80,10 @@ class AdminCog(commands.Cog):
             print("[sotd] Failed to fetch a random song.", file=sys.stderr)
             return
 
+        # Store current SOTD for later retrieval
+        state.current_sotd = song_data
+        state.save_sotd_config()
+        
         print(f"[sotd] Posting Song of the Day: {song_data.get('title', '?')}")
 
         title = song_data.get("title", "Unknown")
@@ -202,7 +217,8 @@ class AdminCog(commands.Cog):
         embed.add_field(name="Browse & Discover", value="\n".join(browse_lines), inline=False)
 
         admin_lines = [
-            "`!jw sotd #channel` — Set the Song of the Day channel.",
+            "`!jw sotd [#channel]` — Set/view the Song of the Day channel.",
+            "`!jw sotdtime [HH:MM]` — Set/view the SOTD announcement time (PT).",
             "`!jw emoji list|upload|delete` — Manage application emojis.",
             "`!jw sync` — Force-sync slash commands to Discord.",
             "`!jw ver` — Show bot version and recent updates.",
@@ -211,6 +227,7 @@ class AdminCog(commands.Cog):
 
         slash_lines = [
             "All commands are also available as `/jw <command>`.",
+            "`/jw sotd` — View the current Song of the Day.",
             "Type `/jw` in chat to see the full slash command list.",
         ]
         embed.add_field(name="Slash Commands", value="\n".join(slash_lines), inline=False)
@@ -292,16 +309,66 @@ class AdminCog(commands.Cog):
 
     @commands.command(name="sotd")
     @commands.has_permissions(administrator=True)
-    async def setup_sotd(self, ctx: commands.Context, channel: discord.TextChannel):
+    async def setup_sotd(self, ctx: commands.Context, channel: discord.TextChannel = None):
         """Set (or update) the Song of the Day channel for this server (admin only)."""
 
         if not ctx.guild:
             await helpers.send_temporary(ctx, "This command can only be used in a server.")
             return
 
-        state.sotd_config[str(ctx.guild.id)] = channel.id
-        state.save_sotd_config()
-        await helpers.send_temporary(ctx, f"Song of the Day will be posted daily in {channel.mention}.")
+        if channel:
+            state.sotd_config[str(ctx.guild.id)] = channel.id
+            state.save_sotd_config()
+            hour = state.sotd_time.get("hour", 12)
+            minute = state.sotd_time.get("minute", 0)
+            await helpers.send_temporary(ctx, f"Song of the Day will be posted daily in {channel.mention} at {hour:02d}:{minute:02d} PT (Pacific Time).")
+        else:
+            # Show current config
+            channel_id = state.sotd_config.get(str(ctx.guild.id))
+            if channel_id:
+                chan = ctx.guild.get_channel(channel_id)
+                hour = state.sotd_time.get("hour", 12)
+                minute = state.sotd_time.get("minute", 0)
+                await helpers.send_temporary(ctx, f"SOTD is configured for {chan.mention if chan else 'unknown channel'} at {hour:02d}:{minute:02d} PT (Pacific Time).")
+            else:
+                await helpers.send_temporary(ctx, "SOTD is not configured for this server.")
+
+    @commands.command(name="sotdtime")
+    @commands.has_permissions(administrator=True)
+    async def setup_sotd_time(self, ctx: commands.Context, time_str: str = None):
+        """Set the time for Song of the Day announcements (HH:MM in Pacific Time, admin only).
+        
+        Examples:
+            !jw sotdtime 14:30  — Set SOTD to 2:30 PM PT
+            !jw sotdtime 09:00  — Set SOTD to 9:00 AM PT
+            !jw sotdtime        — View current time
+        """
+
+        if not time_str:
+            # Show current time
+            hour = state.sotd_time.get("hour", 12)
+            minute = state.sotd_time.get("minute", 0)
+            await helpers.send_temporary(ctx, f"SOTD is currently scheduled for {hour:02d}:{minute:02d} PT (Pacific Time).")
+            return
+
+        # Parse time string (HH:MM format)
+        try:
+            parts = time_str.split(":")
+            if len(parts) != 2:
+                raise ValueError("Invalid format")
+            hour = int(parts[0])
+            minute = int(parts[1])
+            
+            if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+                raise ValueError("Invalid time range")
+            
+            state.sotd_time["hour"] = hour
+            state.sotd_time["minute"] = minute
+            state.save_sotd_config()
+            
+            await helpers.send_temporary(ctx, f"✅ SOTD will now be posted daily at {hour:02d}:{minute:02d} PT (Pacific Time).")
+        except (ValueError, IndexError):
+            await helpers.send_temporary(ctx, "Invalid time format. Use HH:MM (e.g., 14:30 for 2:30 PM PT).")
 
 
     async def context_view_stats(self, interaction: discord.Interaction, user: discord.Member) -> None:
