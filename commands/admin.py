@@ -292,13 +292,14 @@ class AdminCog(commands.Cog):
             colour=discord.Colour.green(),
         )
         embed.add_field(
-            name="Recent Updates (v3.4.0)",
+            name="Recent Updates (v3.5.0)",
             value=(
-                "• 🔀 Playlist Shuffle — New button to randomize playlist track order\n"
-                "• ⏭️ Queue Control — Play Now, Play Next, or Add to Queue buttons\n"
-                "• 📅 Leak Timeline — `/jw leaks` shows chronological leaked song history\n"
-                "• 💰 Groupbuy Info — Timeline displays groupbuy status for leaked songs\n"
-                "• ⚡ Smart Queueing — Control exactly where songs are added to queue"
+                "• 📝 Interactive Song Selection — Dropdown menu in leak timeline\n"
+                "• 🎵 Detailed Song View — Full metadata with album art & credits\n"
+                "• 📝 Real Lyrics & Snippets — Fetched directly from API\n"
+                "• 🎤 Genius Fallback — Auto-fetches lyrics from Genius if not in API\n"
+                "• 🎬 Snippets Display — View available song snippets inline\n"
+                "• 🔧 Bug Fixes — Fixed SOTD persistence & slash command issues"
             ),
             inline=False,
         )

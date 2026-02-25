@@ -69,7 +69,7 @@ Then deploy using your docker-compose configuration or Portainer.
 
 ## Version
 
-Current version: **3.4.0**
+Current version: **3.5.0**
 Build date: 2026-02-25
 
 ## Commands
