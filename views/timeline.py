@@ -400,11 +400,27 @@ class LeakTimelineView(ui.View):
             return
         
         name = getattr(self.selected_song, "name", "Unknown")
-        await interaction.response.send_message(
-            f"Lyrics for **{name}** - Search on Genius.com",
-            ephemeral=True
+        lyrics = getattr(self.selected_song, "lyrics", None)
+        
+        if not lyrics:
+            await interaction.response.send_message(
+                f"No lyrics stored for **{name}**.",
+                ephemeral=True
+            )
+            helpers.schedule_interaction_deletion(interaction, 5)
+            return
+        
+        # Truncate to Discord's embed description limit
+        lyrics_text = str(lyrics)[:4096]
+        
+        embed = discord.Embed(
+            title=f"📝 Lyrics - {name}",
+            description=lyrics_text,
+            colour=discord.Colour.blue()
         )
-        helpers.schedule_interaction_deletion(interaction, 5)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        helpers.schedule_interaction_deletion(interaction, 60)
     
     async def _on_snippets(self, interaction: discord.Interaction):
         """Show snippets for selected song."""
@@ -413,8 +429,35 @@ class LeakTimelineView(ui.View):
             return
         
         name = getattr(self.selected_song, "name", "Unknown")
-        await interaction.response.send_message(
-            f"Snippets for **{name}** - Check YouTube or SoundCloud",
-            ephemeral=True
+        snippets = getattr(self.selected_song, "snippets", None)
+        
+        if not snippets:
+            await interaction.response.send_message(
+                f"No snippets stored for **{name}**.",
+                ephemeral=True
+            )
+            helpers.schedule_interaction_deletion(interaction, 5)
+            return
+        
+        # Format snippets list
+        lines = []
+        if isinstance(snippets, (list, tuple)):
+            for snip in snippets:
+                if isinstance(snip, dict):
+                    label = snip.get("label") or snip.get("name") or snip.get("id") or str(snip)
+                    lines.append(f"- {label}")
+                else:
+                    lines.append(f"- {snip}")
+        else:
+            lines.append(str(snippets))
+        
+        body = "\n".join(lines)[:4096]
+        
+        embed = discord.Embed(
+            title=f"🎬 Snippets - {name}",
+            description=body,
+            colour=discord.Colour.purple()
         )
-        helpers.schedule_interaction_deletion(interaction, 5)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        helpers.schedule_interaction_deletion(interaction, 60)

@@ -146,7 +146,9 @@ class JuiceWRLDAPI:
                         session_titles=song_data.get('session_titles', ''),
                         session_tracking=song_data.get('session_tracking', ''),
                         instrumental_names=song_data.get('instrumental_names', ''),
-                        public_id=song_data.get('public_id', '')
+                        public_id=song_data.get('public_id', ''),
+                        lyrics=song_data.get('lyrics'),
+                        snippets=song_data.get('snippets'),
                     )
                     songs.append(song)
             
@@ -202,6 +204,8 @@ class JuiceWRLDAPI:
             public_id=data.get('public_id', ''),
             path=data.get('path', ''),
             bitrate=data.get('bitrate'),
+            lyrics=data.get('lyrics'),
+            snippets=data.get('snippets'),
         )
 
     async def get_eras(self) -> List[Era]:

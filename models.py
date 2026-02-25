@@ -61,6 +61,9 @@ class Song:
     path: str = ""
     # Optional bitrate field returned by some song detail endpoints
     bitrate: Optional[int] = None
+    # Optional lyrics and snippets fields
+    lyrics: Optional[str] = None
+    snippets: Optional[List[Any]] = None
 
 
 @dataclass
