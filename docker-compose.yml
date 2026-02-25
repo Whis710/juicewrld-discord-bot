@@ -10,3 +10,5 @@ services:
       - JUICEWRLD_API_BASE_URL=${JUICE_BASE_URL:-https://juicewrldapi.com}
     volumes:
       - ./playlists.json:/app/playlists.json
+      - ./sotd_config.json:/app/sotd_config.json
+      - ./listening_stats.json:/app/listening_stats.json
