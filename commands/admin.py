@@ -414,7 +414,7 @@ class AdminCog(commands.Cog):
             )
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         # Search the API for this song and try to play it.
         try:

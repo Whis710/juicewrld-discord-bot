@@ -123,7 +123,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_eras(self, interaction: discord.Interaction) -> None:
         """Interactive eras list with select menu for detailed info."""
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         try:
             eras = await helpers.get_api().get_eras()
@@ -150,7 +150,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_era(self, interaction: discord.Interaction, era_name: str) -> None:
         """Ephemeral equivalent of !jw era."""
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         try:
             results = await helpers.get_api().get_songs(era=era_name, page=1, page_size=25)
@@ -174,7 +174,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_similar(self, interaction: discord.Interaction) -> None:
         """Ephemeral equivalent of !jw similar."""
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
         if not guild:
@@ -202,7 +202,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_play(self, interaction: discord.Interaction, query: str) -> None:
         """Play a song with autocomplete search."""
     
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
     
         user = interaction.user
         if not isinstance(user, discord.Member) or not user.voice or not user.voice.channel:
@@ -255,7 +255,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_search(self, interaction: discord.Interaction, query: str) -> None:
         """Ephemeral, paginated search (equivalent to !jw search)."""
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         # Build a Context to drive playback when buttons are pressed.
         ctx = await commands.Context.from_interaction(interaction)
@@ -318,7 +318,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_song(self, interaction: discord.Interaction, song_id: int) -> None:
         """Ephemeral equivalent of !jw song."""
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         try:
             song = await helpers.get_api().get_song(song_id)
@@ -367,7 +367,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_leave(self, interaction: discord.Interaction) -> None:
         """Ephemeral equivalent of !jw leave."""
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
         voice: Optional[discord.VoiceClient] = guild.voice_client if guild else None
@@ -388,7 +388,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_radio(self, interaction: discord.Interaction) -> None:
         """Ephemeral equivalent of !jw radio (start)."""
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
         user = interaction.user
@@ -468,7 +468,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             return
 
         # Build a Context to drive playback when buttons are pressed.
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
         ctx = await commands.Context.from_interaction(interaction)
 
         view = PlaylistPaginationView(ctx=ctx, playlists=playlists, user=user, interaction=interaction)
@@ -585,7 +585,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     async def slash_leaks(self, interaction: discord.Interaction, category: app_commands.Choice[str] = None, limit: int = 100) -> None:
         """Browse leaked songs chronologically with filters."""
         
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
         
         # Limit to reasonable range
         limit = min(max(10, limit), 500)
@@ -669,7 +669,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             )
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         base_path = scope.value if scope else ""
         scope_label = scope.name if scope else "the comp browser"
