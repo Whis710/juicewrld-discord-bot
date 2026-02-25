@@ -121,7 +121,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
 
     @app_commands.command(name="eras", description="List all Juice WRLD musical eras.")
     async def slash_eras(self, interaction: discord.Interaction) -> None:
-        """Ephemeral equivalent of !jw eras."""
+        """Interactive eras list with select menu for detailed info."""
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -135,19 +135,13 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             await interaction.followup.send("No eras found.", ephemeral=True)
             return
 
-        lines = []
-        for era in eras:
-            tf = f" ({era.time_frame})" if era.time_frame else ""
-            lines.append(f"**{era.name}**{tf}")
+        # Import the era view
+        from views.era import EraSelectView, build_eras_list_embed
 
-        embed = discord.Embed(
-            title="Juice WRLD Eras",
-            description="\n".join(lines),
-            colour=discord.Colour.purple(),
-        )
-        embed.set_footer(text="Use /jw era <name> to browse songs from an era.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        helpers.schedule_interaction_deletion(interaction, 30)
+        view = EraSelectView(eras=eras, interaction=interaction)
+        embed = build_eras_list_embed(eras)
+        
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
     @app_commands.command(name="era", description="Browse songs from a specific era.")
