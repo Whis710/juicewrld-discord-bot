@@ -14,6 +14,7 @@ from constants import (
     PLAYLISTS_FILE,
     STATS_FILE,
     SOTD_CONFIG_FILE,
+    HISTORY_FILE,
 )
 
 # ── Per-guild state ──────────────────────────────────────────────────
@@ -202,12 +203,43 @@ def touch_activity(guild_id: int) -> None:
     guild_last_activity[guild_id] = time.time()
 
 
+def load_history_from_disk() -> None:
+    """Load guild play history from disk into memory (best-effort)."""
+    global guild_history
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (FileNotFoundError, Exception):
+        return
+    if not isinstance(raw, dict):
+        return
+    loaded: Dict[int, List[Dict[str, Any]]] = {}
+    for gid_str, entries in raw.items():
+        try:
+            loaded[int(gid_str)] = entries
+        except (TypeError, ValueError):
+            continue
+    if loaded:
+        guild_history = loaded
+
+
+def save_history_to_disk() -> None:
+    """Persist guild play history to disk (best-effort)."""
+    try:
+        serialized = {str(gid): entries for gid, entries in guild_history.items()}
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(serialized, f, ensure_ascii=False)
+    except Exception:
+        return
+
+
 def push_history(guild_id: int, entry: Dict[str, Any]) -> None:
     """Push a song entry to the guild's play history (newest first)."""
     history = guild_history.setdefault(guild_id, [])
     history.insert(0, entry)
     if len(history) > HISTORY_MAX_LENGTH:
         del history[HISTORY_MAX_LENGTH:]
+    save_history_to_disk()
 
 
 # ── Explicit initialisation ───────────────────────────────────────
@@ -221,3 +253,4 @@ def load_all() -> None:
     load_user_playlists_from_disk()
     load_listening_stats_from_disk()
     load_sotd_config()
+    load_history_from_disk()

@@ -14,6 +14,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 PLAYLISTS_FILE = os.path.join(_HERE, "playlists.json")
 STATS_FILE = os.path.join(_HERE, "listening_stats.json")
 SOTD_CONFIG_FILE = os.path.join(_HERE, "sotd_config.json")
+HISTORY_FILE = os.path.join(_HERE, "history.json")
 
 # Bot version info
 BOT_VERSION = "3.2.0"

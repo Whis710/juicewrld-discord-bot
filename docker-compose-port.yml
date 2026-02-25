@@ -17,3 +17,4 @@
          - /home/bryan/projects/juicewrld-discord-bot/playlists.json:/app/playlists.json:rw
          - /home/bryan/projects/juicewrld-discord-bot/sotd_config.json:/app/sotd_config.json:rw
          - /home/bryan/projects/juicewrld-discord-bot/listening_stats.json:/app/listening_stats.json:rw
+         - /home/bryan/projects/juicewrld-discord-bot/history.json:/app/history.json:rw
