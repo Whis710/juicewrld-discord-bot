@@ -4,6 +4,8 @@ import asyncio
 import io
 import math
 import os
+import random
+import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -20,6 +22,7 @@ class PlaylistPaginationView(discord.ui.View):
     Modes:
     - "menu": Shows 4 action buttons (Queue, Add, Edit, Download)
     - "queue": Shows 1-5 buttons to queue a playlist
+    - "shuffle": Shows 🔀1-5 buttons to shuffle and queue a playlist
     - "add": Shows ➕1-5 buttons to add current song to a playlist
     - "edit_menu": Shows edit action buttons (Rename, Delete, Remove Song, Create)
     - "rename": Shows 1-5 buttons to select a playlist to rename
@@ -105,6 +108,8 @@ class PlaylistPaginationView(discord.ui.View):
             
             if self.mode == "queue":
                 footer = "Press 1–5 to queue that playlist."
+            elif self.mode == "shuffle":
+                footer = "Press 🔀1–5 to shuffle and queue that playlist."
             elif self.mode == "add":
                 footer = "Press ➕1–5 to add the currently playing song to that playlist."
             elif self.mode == "rename":
@@ -137,6 +142,10 @@ class PlaylistPaginationView(discord.ui.View):
             queue_btn = discord.ui.Button(label="🎵 Queue Playlist", style=discord.ButtonStyle.primary, row=0)
             queue_btn.callback = self._on_queue_mode
             self.add_item(queue_btn)
+            
+            shuffle_btn = discord.ui.Button(label="🔀 Shuffle & Queue", style=discord.ButtonStyle.primary, row=0)
+            shuffle_btn.callback = self._on_shuffle_mode
+            self.add_item(shuffle_btn)
             
             add_btn = discord.ui.Button(label="➕ Add to Playlist", style=discord.ButtonStyle.success, row=0)
             add_btn.callback = self._on_add_mode
@@ -201,6 +210,10 @@ class PlaylistPaginationView(discord.ui.View):
                     label = str(slot + 1)
                     style = discord.ButtonStyle.primary
                     callback = self._make_queue_callback(slot)
+                elif self.mode == "shuffle":
+                    label = f"🔀{slot + 1}"
+                    style = discord.ButtonStyle.primary
+                    callback = self._make_shuffle_callback(slot)
                 elif self.mode == "add":
                     label = f"➕{slot + 1}"
                     style = discord.ButtonStyle.success
@@ -234,7 +247,12 @@ class PlaylistPaginationView(discord.ui.View):
 
     def _make_queue_callback(self, slot_index: int):
         async def callback(interaction: discord.Interaction):
-            await self._handle_play(interaction, slot_index)
+            await self._handle_play(interaction, slot_index, shuffle=False)
+        return callback
+    
+    def _make_shuffle_callback(self, slot_index: int):
+        async def callback(interaction: discord.Interaction):
+            await self._handle_play(interaction, slot_index, shuffle=True)
         return callback
 
     def _make_add_callback(self, slot_index: int):
@@ -269,6 +287,12 @@ class PlaylistPaginationView(discord.ui.View):
 
     async def _on_queue_mode(self, interaction: discord.Interaction) -> None:
         self.mode = "queue"
+        self._rebuild_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    async def _on_shuffle_mode(self, interaction: discord.Interaction) -> None:
+        self.mode = "shuffle"
         self._rebuild_buttons()
         embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
@@ -343,7 +367,7 @@ class PlaylistPaginationView(discord.ui.View):
         embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    async def _handle_play(self, interaction: discord.Interaction, slot_index: int) -> None:
+    async def _handle_play(self, interaction: discord.Interaction, slot_index: int, shuffle: bool = False) -> None:
         """Handle pressing a numbered button (1–5) to play a playlist."""
         global_index = self.current_page * self.per_page + slot_index
         if global_index < 0 or global_index >= len(self.playlist_items):
@@ -359,6 +383,11 @@ class PlaylistPaginationView(discord.ui.View):
                 f"Playlist `{playlist_name}` is empty.", ephemeral=True
             )
             return
+        
+        # Shuffle tracks if requested
+        if shuffle:
+            tracks = list(tracks)  # Make a copy
+            random.shuffle(tracks)
 
         # Defer since playing a playlist can take time
         await interaction.response.defer(ephemeral=True)
@@ -422,9 +451,10 @@ class PlaylistPaginationView(discord.ui.View):
             )
         else:
             # Update the original message to show "now playing" status
+            shuffle_text = " (shuffled)" if shuffle else ""
             playing_embed = discord.Embed(
                 title="🎵 Now Playing",
-                description=f"Playing playlist **{playlist_name}** ({queued} track(s) queued).",
+                description=f"Playing playlist **{playlist_name}**{shuffle_text} ({queued} track(s) queued).",
                 color=discord.Color.green(),
             )
             playing_embed.set_footer(text="This message will disappear in 5 seconds.")
@@ -435,7 +465,7 @@ class PlaylistPaginationView(discord.ui.View):
                 # Fallback if edit fails - use ephemeral temporary
                 await helpers.send_ephemeral_temporary(
                     interaction,
-                    f"🎵 Now playing playlist `{playlist_name}` ({queued} track(s) queued).",
+                    f"🎵 Now playing playlist `{playlist_name}`{shuffle_text} ({queued} track(s) queued).",
                     delay=5,
                 )
 

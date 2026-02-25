@@ -176,11 +176,18 @@ class PlaybackCog(commands.Cog):
         metadata: Optional[Dict[str, Any]] = None,
         duration_seconds: Optional[int] = None,
         silent: bool = False,
+        position: str = "end",  # "end", "next", or "now"
     ) -> None:
-        """If something is already playing, queue this track; otherwise play now.
+        """Add a track to the queue with flexible positioning.
 
         This is used by search/comp/play commands for on-demand playback.
-        If silent=True, suppress individual "added to queue" messages (useful for batch adds).
+        
+        Args:
+            position: Where to add the track:
+                - "end": Add to end of queue (default)
+                - "next": Add after currently playing song
+                - "now": Stop current song and play immediately
+            silent: Suppress "added to queue" messages (useful for batch adds)
         """
 
         if not ctx.guild:
@@ -191,21 +198,42 @@ class PlaybackCog(commands.Cog):
 
         queue = state.ensure_queue(guild_id)
 
-        # If there is active playback (song or radio), enqueue this track.
+        # If there is active playback and position is "now", stop and play immediately
+        if voice and (voice.is_playing() or voice.is_paused()) and position == "now":
+            voice.stop()  # This will trigger the after callback which processes the queue
+            # Add to front of queue so it plays next
+            queue.insert(0, {
+                "title": title,
+                "path": path,
+                "stream_url": stream_url,
+                "metadata": metadata or {},
+                "duration_seconds": duration_seconds,
+            })
+            if not silent:
+                await helpers.send_temporary(ctx, f"🎵 Playing now: `{title}`")
+            return
+        
+        # If there is active playback, queue this track
         if voice and (voice.is_playing() or voice.is_paused()):
-            queue.append(
-                {
-                    "title": title,
-                    "path": path,
-                    "stream_url": stream_url,
-                    "metadata": metadata or {},
-                    "duration_seconds": duration_seconds,
-                }
-            )
+            track_entry = {
+                "title": title,
+                "path": path,
+                "stream_url": stream_url,
+                "metadata": metadata or {},
+                "duration_seconds": duration_seconds,
+            }
+            
+            if position == "next":
+                queue.insert(0, track_entry)
+                position_msg = "next (position 1)"
+            else:  # position == "end"
+                queue.append(track_entry)
+                position_msg = f"at position {len(queue)}"
+            
             if not silent:
                 await helpers.send_temporary(
                     ctx,
-                    f"Added to queue at position {len(queue)}: `{title}`.",
+                    f"Added to queue {position_msg}: `{title}`.",
                 )
             return
 
@@ -722,19 +750,22 @@ class PlaybackCog(commands.Cog):
             )
 
     @commands.command(name="play")
-    async def play_song(self, ctx: commands.Context, song_id: str):
+    async def play_song(self, ctx: commands.Context, song_id: str, position: str = "end"):
         """Play a Juice WRLD song in the caller's voice channel by song ID."""
-        await self._play_song_impl(ctx, song_id, disable_radio=True)
+        await self._play_song_impl(ctx, song_id, disable_radio=True, position=position)
 
-    async def queue_song(self, ctx: commands.Context, song_id: str):
+    async def queue_song(self, ctx: commands.Context, song_id: str, position: str = "end"):
         """Queue a song without disabling radio mode (used by search Queue buttons)."""
-        await self._play_song_impl(ctx, song_id, disable_radio=False)
+        await self._play_song_impl(ctx, song_id, disable_radio=False, position=position)
 
-    async def _play_song_impl(self, ctx: commands.Context, song_id: str, *, disable_radio: bool = True):
+    async def _play_song_impl(self, ctx: commands.Context, song_id: str, *, disable_radio: bool = True, position: str = "end"):
         """Core implementation for play/queue a song by ID.
 
         The song ID must be numeric; if it isn't, we show a helpful
         error message instead of raising a conversion error.
+        
+        Args:
+            position: Queue position - "end" (default), "next", or "now"
         """
 
         # Ensure the user is in a voice channel
@@ -953,6 +984,7 @@ class PlaybackCog(commands.Cog):
             path=path_for_meta,
             metadata=song_meta,
             duration_seconds=duration_seconds,
+            position=position,
         )
 
 

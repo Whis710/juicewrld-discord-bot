@@ -150,13 +150,17 @@ class SingleSongResultView(discord.ui.View):
         self.clear_items()
         
         if self.mode == "main":
-            # Main mode: Play, Queue, Add to Playlist, and Info buttons
-            play_btn = discord.ui.Button(label="▶️ Play", style=discord.ButtonStyle.primary, row=0)
-            play_btn.callback = self._on_play
+            # Main mode: Play, Queue, Play Next, Add to Playlist, and Info buttons
+            play_btn = discord.ui.Button(label="▶️ Play Now", style=discord.ButtonStyle.danger, row=0)
+            play_btn.callback = self._on_play_now
             self.add_item(play_btn)
+            
+            play_next_btn = discord.ui.Button(label="⏭️ Play Next", style=discord.ButtonStyle.primary, row=0)
+            play_next_btn.callback = self._on_play_next
+            self.add_item(play_next_btn)
 
             if self._queue_fn:
-                queue_btn = discord.ui.Button(label="📥 Queue", style=discord.ButtonStyle.secondary, row=0)
+                queue_btn = discord.ui.Button(label="📥 Add to Queue", style=discord.ButtonStyle.secondary, row=0)
                 queue_btn.callback = self._on_queue
                 self.add_item(queue_btn)
             
@@ -206,8 +210,8 @@ class SingleSongResultView(discord.ui.View):
             new_playlist_btn.callback = self._on_create_new_playlist
             self.add_item(new_playlist_btn)
 
-    async def _on_play(self, interaction: discord.Interaction) -> None:
-        """Handle Play button press."""
+    async def _on_play_now(self, interaction: discord.Interaction) -> None:
+        """Handle Play Now button press - interrupts current song."""
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message(
                 "Only the user who ran this search can use these buttons.",
@@ -228,12 +232,12 @@ class SingleSongResultView(discord.ui.View):
         # Defer the interaction
         await interaction.response.defer(ephemeral=True)
 
-        # If radio is active, disable it and let current song finish
+        # If radio is active, disable it
         if self.ctx.guild and state.guild_radio_enabled.get(self.ctx.guild.id):
             state.guild_radio_enabled[self.ctx.guild.id] = False
 
-        # Play the song (will queue if something is playing)
-        await self._play_fn(self.ctx, str(song_id))
+        # Play the song immediately (position="now")
+        await self._play_fn(self.ctx, str(song_id), position="now")
 
         # Close the search result message
         try:
@@ -242,6 +246,38 @@ class SingleSongResultView(discord.ui.View):
             pass
 
         self.stop()
+
+    async def _on_play_next(self, interaction: discord.Interaction) -> None:
+        """Handle Play Next button press - adds to front of queue."""
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the user who ran this search can use these buttons.",
+                ephemeral=True,
+            )
+            return
+
+        song_id = getattr(self.song, "id", None)
+        if song_id is None:
+            await interaction.response.send_message(
+                "This song does not have a valid ID to play.",
+                ephemeral=True,
+            )
+            return
+
+        name = getattr(self.song, "name", getattr(self.song, "title", "Unknown"))
+        await interaction.response.defer(ephemeral=True)
+        
+        # Play next (position="next")
+        await self._play_fn(self.ctx, str(song_id), position="next")
+
+        await helpers.send_ephemeral_temporary(
+            interaction, f"⏭️ `{name}` will play next."
+        )
+
+    async def _on_play(self, interaction: discord.Interaction) -> None:
+        """Handle Play button press (legacy - kept for compatibility)."""
+        # Redirect to play_now
+        await self._on_play_now(interaction)
 
     async def _on_queue(self, interaction: discord.Interaction) -> None:
         """Handle Queue button press — add to queue without disabling radio."""
