@@ -99,6 +99,10 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     def _playback(self):
         return self.bot.get_cog("PlaybackCog")
 
+    @property
+    def _queue_fn(self):
+        return self.bot.get_cog("PlaybackCog").queue_song
+
     @app_commands.command(name="ping", description="Check if the bot is alive.")
     async def slash_ping(self, interaction: discord.Interaction) -> None:
         """Ephemeral equivalent of !jw ping."""
@@ -167,7 +171,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
 
         ctx = await commands.Context.from_interaction(interaction)
         total = results.get("count") if isinstance(results, dict) else None
-        view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total, is_ephemeral=True, play_fn=self._playback.play_song)
+        view = SearchPaginationView(ctx=ctx, songs=songs, query=f"Era: {era_name}", total_count=total, is_ephemeral=True, play_fn=self._playback.play_song, queue_fn=self._queue_fn)
         embed = view.build_embed()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -193,7 +197,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             return
 
         ctx = await commands.Context.from_interaction(interaction)
-        view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top), is_ephemeral=True, play_fn=self._playback.play_song)
+        view = SearchPaginationView(ctx=ctx, songs=top, query=f"Similar to: {title}", total_count=len(top), is_ephemeral=True, play_fn=self._playback.play_song, queue_fn=self._queue_fn)
         embed = view.build_embed()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -268,7 +272,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             # Fetch the specific song by ID
             try:
                 song = await api.get_song(int(query))
-                view = SingleSongResultView(ctx=ctx, song=song, query=query, play_fn=self._playback.play_song)
+                view = SingleSongResultView(ctx=ctx, song=song, query=query, play_fn=self._playback.play_song, queue_fn=self._queue_fn)
                 embed = view.build_embed()
                 await interaction.followup.send(embed=embed, view=view, ephemeral=True)
                 return
@@ -305,12 +309,12 @@ class SlashCog(commands.GroupCog, group_name="jw"):
     
         # If only one result, show interactive single song view
         if len(songs) == 1:
-            view = SingleSongResultView(ctx=ctx, song=songs[0], query=query, play_fn=self._playback.play_song)
+            view = SingleSongResultView(ctx=ctx, song=songs[0], query=query, play_fn=self._playback.play_song, queue_fn=self._queue_fn)
             embed = view.build_embed()
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         else:
             # Multiple results: show pagination view
-            view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total, is_ephemeral=True, play_fn=self._playback.play_song)
+            view = SearchPaginationView(ctx=ctx, songs=songs, query=query, total_count=total, is_ephemeral=True, play_fn=self._playback.play_song, queue_fn=self._queue_fn)
             embed = view.build_embed()
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -336,7 +340,7 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             return
 
         ctx = await commands.Context.from_interaction(interaction)
-        view = SingleSongResultView(ctx=ctx, song=song, query=str(song_id), play_fn=self._playback.play_song)
+        view = SingleSongResultView(ctx=ctx, song=song, query=str(song_id), play_fn=self._playback.play_song, queue_fn=self._queue_fn)
         embed = view.build_embed()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -496,6 +500,46 @@ class SlashCog(commands.GroupCog, group_name="jw"):
         await interaction.response.send_message(
             f"Song of the Day will be posted daily in {channel.mention}.", ephemeral=True
         )
+
+
+    @app_commands.command(name="history", description="Show the last 10 songs played in this server.")
+    async def slash_history(self, interaction: discord.Interaction) -> None:
+        """Ephemeral equivalent of !jw history."""
+
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        history = state.guild_history.get(guild.id, [])
+        if not history:
+            await interaction.response.send_message(
+                "No songs have been played in this server yet.", ephemeral=True
+            )
+            return
+
+        lines = []
+        for i, entry in enumerate(history, 1):
+            title = entry.get("title", "Unknown")
+            meta = entry.get("metadata") or {}
+            era_val = meta.get("era")
+            era_text = ""
+            if isinstance(era_val, dict) and era_val.get("name"):
+                era_text = f" \u00b7 {era_val['name']}"
+            elif era_val:
+                era_text = f" \u00b7 {era_val}"
+            lines.append(f"`{i}.` {title}{era_text}")
+
+        embed = discord.Embed(
+            title="Recently Played",
+            description="\n".join(lines),
+            colour=discord.Colour.purple(),
+        )
+        embed.set_footer(text=f"Last {len(history)} song(s) in this server")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        helpers.schedule_interaction_deletion(interaction, 30)
 
 
     @app_commands.command(name="comp", description="Search comp files by name and play the best match.")

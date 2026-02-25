@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import datetime
 import io
 import sys
 from typing import Any, Dict, List, Optional
@@ -50,16 +51,25 @@ class AdminCog(commands.Cog):
         """Lazy reference to PlaybackCog for cross-cog calls."""
         return self.bot.get_cog("PlaybackCog")
 
-    @tasks.loop(hours=24)
+    @tasks.loop(time=datetime.time(hour=12, minute=0, tzinfo=datetime.timezone.utc))
     async def _song_of_the_day_task(self) -> None:
-        """Post a random Song of the Day to configured channels."""
+        """Post a random Song of the Day to configured channels at noon UTC daily."""
 
         if not state.sotd_config:
+            print("[sotd] No channels configured — skipping.")
             return
 
-        song_data = await self._playback._fetch_random_radio_song(include_stream_url=False)
-        if not song_data:
+        playback = self._playback
+        if not playback:
+            print("[sotd] PlaybackCog not loaded — skipping.", file=sys.stderr)
             return
+
+        song_data = await playback._fetch_random_radio_song(include_stream_url=False)
+        if not song_data:
+            print("[sotd] Failed to fetch a random song.", file=sys.stderr)
+            return
+
+        print(f"[sotd] Posting Song of the Day: {song_data.get('title', '?')}")
 
         title = song_data.get("title", "Unknown")
         metadata = song_data.get("metadata", {})
@@ -88,7 +98,7 @@ class AdminCog(commands.Cog):
             embed.add_field(name="Length", value=f"{m}:{s:02d}", inline=True)
         embed.set_footer(text="Press Play to listen!")
 
-        view = SongOfTheDayView(song_data=song_data, queue_fn=self._playback._queue_or_play_now, stream_fn=self._playback._get_fresh_stream_url)
+        view = SongOfTheDayView(song_data=song_data, queue_fn=playback._queue_or_play_now, stream_fn=playback._get_fresh_stream_url)
 
         for guild_id_str, channel_id in list(state.sotd_config.items()):
             guild_obj = self.bot.get_guild(int(guild_id_str))
@@ -107,13 +117,18 @@ class AdminCog(commands.Cog):
                         username="Juice WRLD Radio",
                         avatar_url=image_url if image_url else None,
                     )
+                    print(f"[sotd] Posted via webhook to #{chan.name} in {guild_obj.name}")
                 else:
                     await chan.send(embed=embed, view=view)
-            except Exception:
+                    print(f"[sotd] Posted to #{chan.name} in {guild_obj.name}")
+            except Exception as exc:
                 # Fall back to normal bot message on any failure.
+                print(f"[sotd] Webhook failed for #{chan.name}: {exc}", file=sys.stderr)
                 try:
                     await chan.send(embed=embed, view=view)
-                except Exception:
+                    print(f"[sotd] Fallback post to #{chan.name} in {guild_obj.name}")
+                except Exception as exc2:
+                    print(f"[sotd] Failed to post to #{chan.name}: {exc2}", file=sys.stderr)
                     continue
 
 
@@ -172,6 +187,8 @@ class AdminCog(commands.Cog):
             "`!jw pl delete <name>` — Delete a playlist.",
             "`!jw pl rename <old> <new>` — Rename a playlist.",
             "`!jw pl remove <name> <index>` — Remove a track by index.",
+            "`!jw pl share <name>` — Share a playlist publicly in the channel.",
+            "`!jw pl import @user <name>` — Copy another user's playlist.",
         ]
         embed.add_field(name="Playlists", value="\n".join(playlist_lines), inline=False)
 
@@ -180,6 +197,7 @@ class AdminCog(commands.Cog):
             "`!jw era <name>` — Browse songs from a specific era.",
             "`!jw similar` — Find songs similar to the currently playing track.",
             "`!jw stats` — View your personal listening stats.",
+            "`!jw history` — Show the last 10 songs played in this server.",
         ]
         embed.add_field(name="Browse & Discover", value="\n".join(browse_lines), inline=False)
 
@@ -257,14 +275,13 @@ class AdminCog(commands.Cog):
             colour=discord.Colour.green(),
         )
         embed.add_field(
-            name="Recent Updates (v3.1.0)",
+            name="Recent Updates (v3.2.0)",
             value=(
-                "• 🏗️ Modular refactor — bot split into Cogs for cleaner code\n"
-                "• 🔧 Session management — shared HTTP sessions, proper cleanup on shutdown\n"
-                "• 📋 Paginated playlists — `!jw pl show` now uses embeds instead of truncating\n"
-                "• 🔇 Ephemeral slash commands — `/jw radio` and `/jw stop` no longer post publicly\n"
-                "• ⚡ Player performance — cached messages reduce API calls\n"
-                "• 🐛 Bug fixes — SOTD play button, context menu play, radio error logging"
+                "• 📜 History — `!jw history` / `/jw history` shows last 10 songs played\n"
+                "• 📤 Playlist sharing — `!jw pl share` posts a playlist publicly for others\n"
+                "• 📥 Playlist import — `!jw pl import @user <name>` copies another user's playlist\n"
+                "• 📥 Queue button — search results now have a Queue button (doesn't interrupt radio)\n"
+                "• ⚡ Play/queue refactor — cleaner internal play pipeline"
             ),
             inline=False,
         )

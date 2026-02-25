@@ -16,8 +16,8 @@ STATS_FILE = os.path.join(_HERE, "listening_stats.json")
 SOTD_CONFIG_FILE = os.path.join(_HERE, "sotd_config.json")
 
 # Bot version info
-BOT_VERSION = "3.1.0"
-BOT_BUILD_DATE = "2026-02-24"
+BOT_VERSION = "3.2.0"
+BOT_BUILD_DATE = "2026-02-25"
 
 # Environment
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
