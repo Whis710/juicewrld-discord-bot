@@ -573,6 +573,73 @@ class SlashCog(commands.GroupCog, group_name="jw"):
         await interaction.response.send_message(embed=embed, ephemeral=True)
         helpers.schedule_interaction_deletion(interaction, 30)
 
+    @app_commands.command(name="leaks", description="Browse leaked songs in chronological order.")
+    @app_commands.describe(
+        category="Filter by category (optional)",
+        limit="Number of songs to fetch (default: 100, max: 500)"
+    )
+    @app_commands.choices(category=[
+        app_commands.Choice(name="Unreleased", value="unreleased"),
+        app_commands.Choice(name="All", value=""),
+    ])
+    async def slash_leaks(self, interaction: discord.Interaction, category: app_commands.Choice[str] = None, limit: int = 100) -> None:
+        """Browse leaked songs chronologically with filters."""
+        
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        # Limit to reasonable range
+        limit = min(max(10, limit), 500)
+        
+        try:
+            # Fetch songs with leak dates
+            api = helpers.get_api()
+            category_filter = category.value if category else None
+            
+            # Fetch multiple pages to get more songs
+            all_songs = []
+            page = 1
+            while len(all_songs) < limit:
+                results = await api.get_songs(
+                    page=page,
+                    page_size=min(100, limit - len(all_songs)),
+                    category=category_filter if category_filter else None
+                )
+                songs = results.get("results") or []
+                if not songs:
+                    break
+                
+                # Only include songs with leak dates
+                leaked_songs = [
+                    s for s in songs 
+                    if getattr(s, "date_leaked", "").strip()
+                ]
+                all_songs.extend(leaked_songs)
+                
+                page += 1
+                if page > 5:  # Don't fetch too many pages
+                    break
+            
+            if not all_songs:
+                await interaction.followup.send(
+                    "No leaked songs found.",
+                    ephemeral=True
+                )
+                return
+            
+            # Create timeline view
+            from views.timeline import LeakTimelineView
+            ctx = await commands.Context.from_interaction(interaction)
+            view = LeakTimelineView(ctx=ctx, songs=all_songs)
+            embed = view.build_embed()
+            
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            
+        except JuiceWRLDAPIError as e:
+            await interaction.followup.send(
+                f"Error fetching leaked songs: {e}",
+                ephemeral=True
+            )
+
 
     @app_commands.command(name="comp", description="Search comp files by name and play the best match.")
     @app_commands.describe(

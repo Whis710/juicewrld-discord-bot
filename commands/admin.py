@@ -292,13 +292,13 @@ class AdminCog(commands.Cog):
             colour=discord.Colour.green(),
         )
         embed.add_field(
-            name="Recent Updates (v3.3.0)",
+            name="Recent Updates (v3.4.0)",
             value=(
-                "• ⏰ SOTD scheduling — `!jw sotdtime` sets announcement time (Pacific Time)\n"
-                "• 🎵 View SOTD — `/jw sotd` lets anyone check the current Song of the Day\n"
-                "• 📀 Interactive eras — Select menu to view detailed era info with descriptions\n"
-                "• 📊 Era stats — Shows time frame, description, and song count for each era\n"
-                "• 🕒 Configurable timing — SOTD posts at your preferred time daily"
+                "• 🔀 Playlist Shuffle — New button to randomize playlist track order\n"
+                "• ⏭️ Queue Control — Play Now, Play Next, or Add to Queue buttons\n"
+                "• 📅 Leak Timeline — `/jw leaks` shows chronological leaked song history\n"
+                "• 💰 Groupbuy Info — Timeline displays groupbuy status for leaked songs\n"
+                "• ⚡ Smart Queueing — Control exactly where songs are added to queue"
             ),
             inline=False,
         )
