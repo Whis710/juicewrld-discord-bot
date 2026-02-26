@@ -17,8 +17,8 @@ SOTD_CONFIG_FILE = os.path.join(_HERE, "sotd_config.json")
 HISTORY_FILE = os.path.join(_HERE, "history.json")
 
 # Bot version info
-BOT_VERSION = "3.5.0"
-BOT_BUILD_DATE = "2026-02-25"
+BOT_VERSION = "3.5.1"
+BOT_BUILD_DATE = "2026-02-26"
 
 # Environment
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")

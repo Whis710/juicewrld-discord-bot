@@ -29,7 +29,7 @@ class PlaybackCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        PlaybackCog._IDLE_STATUSES = [f"v{BOT_VERSION}", 'try "/jw"', "Idle play me"]
+        PlaybackCog._IDLE_STATUSES = [f"v{BOT_VERSION}", 'try "/jw"', "Idle play me", "link with !jw link"]
         self._update_player_messages.start()
         self._idle_auto_leave.start()
         self._rotate_idle_presence.start()

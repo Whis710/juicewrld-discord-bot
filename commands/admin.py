@@ -178,6 +178,7 @@ class AdminCog(commands.Cog):
             "`!jw stop` — Stop playback and turn off radio mode.",
             "`!jw join` — Make the bot join your voice channel.",
             "`!jw leave` — Disconnect the bot from voice.",
+            "`!jw link` — Get a link to connect your Discord account for linked roles.",
             "`!jw ping` — Check if the bot is alive.",
         ]
         embed.add_field(name="Core Commands", value="\n".join(core_lines), inline=False)
@@ -236,6 +237,40 @@ class AdminCog(commands.Cog):
 
         await ctx.send(embed=embed)
 
+
+    @commands.command(name="link")
+    async def linked_roles(self, ctx: commands.Context):
+        """Get the linked roles connection URL.
+        
+        Connect your Discord account to track your listening stats and unlock
+        exclusive roles based on your plays, listen hours, and unique songs.
+        """
+        import os
+        linked_roles_url = os.getenv("LINKED_ROLES_URL")
+        
+        if not linked_roles_url:
+            await helpers.send_temporary(
+                ctx,
+                "Linked roles are not configured for this bot. Contact the bot owner.",
+                delay=10,
+            )
+            return
+        
+        embed = discord.Embed(
+            title="🔗 Connect Linked Roles",
+            description=(
+                "Connect your Discord account to track your listening stats and unlock exclusive roles!\n\n"
+                f"**[Click here to connect]({linked_roles_url})**\n\n"
+                "You'll be able to track:\n"
+                "• 🎵 Total plays\n"
+                "• ⏰ Listen hours\n"
+                "• 🎧 Unique songs"
+            ),
+            colour=discord.Colour.purple(),
+        )
+        embed.set_footer(text="Your stats update automatically as you listen")
+        
+        await ctx.send(embed=embed)
 
     @commands.command(name="ping")
     async def ping(self, ctx: commands.Context):
