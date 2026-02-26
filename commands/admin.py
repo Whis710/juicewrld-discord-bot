@@ -327,14 +327,14 @@ class AdminCog(commands.Cog):
             colour=discord.Colour.green(),
         )
         embed.add_field(
-            name="Recent Updates (v3.5.0)",
+            name="Recent Updates (v3.5.1)",
             value=(
-                "• 📝 Interactive Song Selection — Dropdown menu in leak timeline\n"
-                "• 🎵 Detailed Song View — Full metadata with album art & credits\n"
-                "• 📝 Real Lyrics & Snippets — Fetched directly from API\n"
-                "• 🎤 Genius Fallback — Auto-fetches lyrics from Genius if not in API\n"
-                "• 🎬 Snippets Display — View available song snippets inline\n"
-                "• 🔧 Bug Fixes — Fixed SOTD persistence & slash command issues"
+                "• 🔗 Linked Roles Command — Use `!jw link` to connect your Discord account\n"
+                "• 🎨 Modern Web UI — Updated linked roles website with dark theme\n"
+                "• 📊 Stats Tracking — Track plays, listen hours, and unique songs\n"
+                "• 🎵 Previous: Interactive song selection, lyrics, and snippets\n"
+                "• 🎤 Previous: Genius API fallback for lyrics\n"
+                "• 🔧 Bug Fixes — SOTD persistence & slash command improvements"
             ),
             inline=False,
         )
