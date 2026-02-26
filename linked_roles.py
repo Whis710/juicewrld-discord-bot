@@ -87,6 +87,25 @@ _BASE_STYLE = """
     overflow-x: hidden;
   }
 
+  /* Rotating wallpaper */
+  #wallpaper {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    transition: opacity 1.5s ease-in-out;
+    opacity: 0;
+  }
+  #wallpaper.visible { opacity: 1; }
+  #wallpaper::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+  }
+
   /* Animated grain overlay */
   body::before {
     content: '';
@@ -331,8 +350,38 @@ def _page(body: str) -> str:
 <html lang="en">
 <head>{_BASE_STYLE}<title>Juice WRLD Bot</title></head>
 <body>
+<div id="wallpaper"></div>
 <div class="orb2"></div>
 {body}
+<script>
+(function() {{
+  var images = [
+    'https://i.imgur.com/1fgMxFO.png',
+    'https://i.imgur.com/j4SnxvT.jpeg',
+    'https://i.imgur.com/jluAw1e.jpeg',
+    'https://i.imgur.com/GHZH3JW.jpeg',
+    'https://i.imgur.com/JSOyXet.jpeg',
+    'https://i.imgur.com/VfvNKu8.jpeg'
+  ];
+  // Fisher-Yates shuffle
+  for (var i = images.length - 1; i > 0; i--) {{
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = images[i]; images[i] = images[j]; images[j] = tmp;
+  }}
+  var idx = 0;
+  var el = document.getElementById('wallpaper');
+  function show() {{
+    el.classList.remove('visible');
+    setTimeout(function() {{
+      el.style.backgroundImage = 'url(' + images[idx] + ')';
+      el.classList.add('visible');
+      idx = (idx + 1) % images.length;
+    }}, 600);
+  }}
+  show();
+  setInterval(show, 6000);
+}})();
+</script>
 </body>
 </html>"""
 
