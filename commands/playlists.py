@@ -342,6 +342,7 @@ class PlaylistsCog(commands.Cog):
             owner=ctx.author,
             playlist_name=name,
             tracks=list(playlist),
+            queue_fn=self._playback._queue_or_play_now,
         )
         embed = view.build_embed()
         msg = await ctx.send(embed=embed, view=view)

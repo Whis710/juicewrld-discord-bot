@@ -471,7 +471,13 @@ class SlashCog(commands.GroupCog, group_name="jw"):
         await interaction.response.defer(ephemeral=True)
         ctx = await commands.Context.from_interaction(interaction)
 
-        view = PlaylistPaginationView(ctx=ctx, playlists=playlists, user=user, interaction=interaction)
+        view = PlaylistPaginationView(
+            ctx=ctx,
+            playlists=playlists,
+            user=user,
+            interaction=interaction,
+            queue_fn=self._playback._queue_or_play_now,
+        )
         embed = view.build_embed()
 
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)

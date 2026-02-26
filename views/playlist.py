@@ -40,12 +40,14 @@ class PlaylistPaginationView(discord.ui.View):
         user: discord.abc.User,
         mode: str = "menu",
         interaction: Optional[discord.Interaction] = None,
+        queue_fn: Optional[Callable] = None,
     ) -> None:
         super().__init__(timeout=60)
         self.ctx = ctx
         self.user = user
         self.mode = mode
         self.interaction = interaction  # Store for cleanup on timeout
+        self._queue_fn = queue_fn  # PlaybackCog._queue_or_play_now injected by caller
         # Convert dict to list of (name, tracks) tuples for pagination
         self.playlist_items: List[tuple] = list(playlists.items())
         self.per_page = 5
@@ -429,7 +431,9 @@ class PlaylistPaginationView(discord.ui.View):
                 metadata = track.get("metadata") or {}
                 duration_seconds = helpers.extract_duration_seconds(metadata, track)
 
-                await _queue_or_play_now(
+                if self._queue_fn is None:
+                    raise RuntimeError("queue_fn not set on PlaylistPaginationView")
+                await self._queue_fn(
                     self.ctx,
                     stream_url=stream_url,
                     title=str(title),
@@ -506,7 +510,7 @@ class PlaylistPaginationView(discord.ui.View):
         song_id_val = meta.get("id") or meta.get("song_id")
 
         user = interaction.user
-        playlists = state.get_or_createstate.user_playlists(user.id)
+        playlists = state.get_or_create_user_playlists(user.id)
         playlist = playlists.get(target_playlist_name)
         
         if playlist is None:
@@ -543,7 +547,7 @@ class PlaylistPaginationView(discord.ui.View):
             }
         )
 
-        state.savestate.user_playlists_to_disk()
+        state.save_user_playlists_to_disk()
 
         msg = await interaction.followup.send(
             f"Added `{title}` to playlist `{target_playlist_name}`.", ephemeral=True, wait=True
@@ -589,7 +593,7 @@ class PlaylistPaginationView(discord.ui.View):
             del playlists[playlist_name]
             if not playlists:
                 state.user_playlists.pop(user.id, None)
-            state.savestate.user_playlists_to_disk()
+            state.save_user_playlists_to_disk()
         
         # Refresh playlist items
         self.playlist_items = list(playlists.items())
@@ -752,6 +756,7 @@ class PlaylistPaginationView(discord.ui.View):
             owner=self.user,
             playlist_name=playlist_name,
             tracks=list(tracks),  # Copy to avoid mutation issues
+            queue_fn=self._queue_fn,
         )
         embed = shared_view.build_embed()
 
@@ -777,12 +782,14 @@ class SharedPlaylistView(discord.ui.View):
         owner: discord.abc.User,
         playlist_name: str,
         tracks: List[Dict[str, Any]],
+        queue_fn: Optional[Callable] = None,
     ) -> None:
         super().__init__(timeout=120)  # 2 minutes timeout
         self.ctx = ctx
         self.owner = owner
         self.playlist_name = playlist_name
         self.tracks = tracks
+        self._queue_fn = queue_fn  # PlaybackCog._queue_or_play_now injected by caller
         self.per_page = 10
         self.current_page = 0
         self.total_pages = max(1, math.ceil(len(self.tracks) / self.per_page))
@@ -921,7 +928,9 @@ class SharedPlaylistView(discord.ui.View):
             metadata = track.get("metadata") or {}
             duration_seconds = helpers.extract_duration_seconds(metadata, track)
 
-            await _queue_or_play_now(
+            if self._queue_fn is None:
+                raise RuntimeError("queue_fn not set on SharedPlaylistView")
+            await self._queue_fn(
                 self.ctx,
                 stream_url=stream_url,
                 title=str(title),
@@ -951,7 +960,7 @@ class SharedPlaylistView(discord.ui.View):
     async def _on_copy(self, interaction: discord.Interaction) -> None:
         """Copy this playlist to the user's own playlists."""
         user = interaction.user
-        user_playlists = state.get_or_createstate.user_playlists(user.id)
+        user_playlists = state.get_or_create_user_playlists(user.id)
         
         # Generate a unique name if there's a conflict
         base_name = self.playlist_name
@@ -973,7 +982,7 @@ class SharedPlaylistView(discord.ui.View):
             })
         
         user_playlists[new_name] = copied_tracks
-        state.savestate.user_playlists_to_disk()
+        state.save_user_playlists_to_disk()
         
         await interaction.response.send_message(
             f"📋 Copied **{self.playlist_name}** to your playlists as **{new_name}** ({len(copied_tracks)} track(s)).",
@@ -1197,7 +1206,7 @@ class PlaylistEditOptionsView(discord.ui.View):
             del playlists[self.playlist_name]
             if not playlists:
                 state.user_playlists.pop(user.id, None)
-            state.savestate.user_playlists_to_disk()
+            state.save_user_playlists_to_disk()
         
         # Go back to parent view with refreshed data
         user_playlists = state.user_playlists.get(user.id) or {}
@@ -1232,7 +1241,7 @@ class PlaylistEditOptionsView(discord.ui.View):
         
         removed_track = playlist.pop(global_index)
         self.tracks = playlist  # Update local reference
-        state.savestate.user_playlists_to_disk()
+        state.save_user_playlists_to_disk()
         
         # Recalculate pages
         self.total_pages = max(1, math.ceil(len(self.tracks) / self.per_page))
@@ -1278,7 +1287,7 @@ class PlaylistRenameModal(discord.ui.Modal, title="Rename Playlist"):
         
         if old_name in playlists:
             playlists[new_name] = playlists.pop(old_name)
-            state.savestate.user_playlists_to_disk()
+            state.save_user_playlists_to_disk()
         
         # Update the edit view
         self.edit_view.playlist_name = new_name
@@ -1311,7 +1320,7 @@ class PlaylistCreateModal(discord.ui.Modal, title="Create New Playlist"):
             return
         
         user = interaction.user
-        playlists = state.get_or_createstate.user_playlists(user.id)
+        playlists = state.get_or_create_user_playlists(user.id)
         
         if name in playlists:
             await interaction.response.send_message(
@@ -1320,7 +1329,7 @@ class PlaylistCreateModal(discord.ui.Modal, title="Create New Playlist"):
             return
         
         playlists[name] = []
-        state.savestate.user_playlists_to_disk()
+        state.save_user_playlists_to_disk()
         
         # Refresh the view
         self.pagination_view.playlist_items = list(playlists.items())
@@ -1366,7 +1375,7 @@ class PlaylistRenameModalNew(discord.ui.Modal, title="Rename Playlist"):
         
         if self.old_name in playlists:
             playlists[new_name] = playlists.pop(self.old_name)
-            state.savestate.user_playlists_to_disk()
+            state.save_user_playlists_to_disk()
         
         # Refresh the view
         self.pagination_view.playlist_items = list(playlists.items())
