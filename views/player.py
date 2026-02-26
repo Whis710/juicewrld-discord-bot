@@ -2,13 +2,14 @@
 
 import time
 from typing import Any, Callable, Dict, List, Optional
-
+import random
 import discord
 from discord.ext import commands
 
 from constants import NOTHING_PLAYING
 import helpers
 import state
+from views.playlist import PlaylistPaginationView
 
 class NowPlayingInfoView(discord.ui.View):
     """Ephemeral view for extra track info (lyrics/snippets) shown from ℹ button."""
