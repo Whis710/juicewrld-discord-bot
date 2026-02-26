@@ -51,6 +51,291 @@ METADATA_SCHEMA = [
 
 app = FastAPI(title="Juice WRLD Bot - Linked Roles", docs_url=None, redoc_url=None)
 
+# ---------------------------------------------------------------------------
+# Shared HTML helpers
+# ---------------------------------------------------------------------------
+
+_BASE_STYLE = """
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0a0a0f;
+    --surface:  #12121a;
+    --border:   #1e1e2e;
+    --accent:   #ff3c5f;
+    --accent2:  #ff8c42;
+    --text:     #e8e8f0;
+    --muted:    #6b6b80;
+    --success:  #39d98a;
+    --error:    #ff3c5f;
+  }
+
+  html, body {
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow-x: hidden;
+  }
+
+  /* Animated grain overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 999;
+    opacity: 0.4;
+  }
+
+  /* Glowing orbs in background */
+  body::after {
+    content: '';
+    position: fixed;
+    width: 600px; height: 600px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,60,95,0.07) 0%, transparent 70%);
+    top: -150px; left: -150px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .orb2 {
+    position: fixed;
+    width: 500px; height: 500px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,140,66,0.06) 0%, transparent 70%);
+    bottom: -100px; right: -100px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Card */
+  .card {
+    position: relative;
+    z-index: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 48px 44px;
+    max-width: 480px;
+    width: 90%;
+    text-align: center;
+    box-shadow: 0 0 0 1px rgba(255,60,95,0.05), 0 40px 80px rgba(0,0,0,0.6);
+    animation: fadeUp 0.5s cubic-bezier(0.22,1,0.36,1) both;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Logo area */
+  .logo-wrap {
+    margin-bottom: 28px;
+  }
+  .logo-wrap img {
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid var(--border);
+    box-shadow: 0 0 24px rgba(255,60,95,0.25);
+    display: block;
+    margin: 0 auto 16px;
+  }
+  .logo-placeholder {
+    width: 88px; height: 88px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 36px;
+    margin: 0 auto 16px;
+    box-shadow: 0 0 32px rgba(255,60,95,0.3);
+  }
+
+  /* Banner image */
+  .banner {
+    width: 100%;
+    height: 140px;
+    object-fit: cover;
+    border-radius: 12px;
+    margin-bottom: 24px;
+    display: block;
+    border: 1px solid var(--border);
+  }
+  .banner-placeholder {
+    width: 100%;
+    height: 140px;
+    background: linear-gradient(135deg, #1a0a12 0%, #0f0a1a 50%, #1a0a0a 100%);
+    border-radius: 12px;
+    margin-bottom: 24px;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    font-weight: 500;
+  }
+
+  /* Typography */
+  h1 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 2.6rem;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    margin-bottom: 12px;
+    background: linear-gradient(135deg, #fff 30%, rgba(255,255,255,0.55));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  h2 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 1.9rem;
+    letter-spacing: 0.04em;
+    margin-bottom: 10px;
+    color: var(--text);
+  }
+  p {
+    font-size: 0.95rem;
+    color: var(--muted);
+    line-height: 1.65;
+    margin-bottom: 8px;
+  }
+  .label {
+    display: inline-block;
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-weight: 500;
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+
+  /* Divider */
+  .divider {
+    height: 1px;
+    background: linear-gradient(to right, transparent, var(--border), transparent);
+    margin: 28px 0;
+  }
+
+  /* CTA Button */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: linear-gradient(135deg, var(--accent), #c92948);
+    color: #fff;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    padding: 14px 32px;
+    border-radius: 50px;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+    box-shadow: 0 4px 20px rgba(255,60,95,0.35);
+    margin-top: 12px;
+  }
+  .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 28px rgba(255,60,95,0.5);
+    opacity: 0.95;
+  }
+  .btn:active { transform: translateY(0); }
+
+  .btn-secondary {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    box-shadow: none;
+    font-size: 0.82rem;
+    padding: 10px 24px;
+    margin-top: 8px;
+  }
+  .btn-secondary:hover {
+    color: var(--text);
+    border-color: var(--muted);
+    box-shadow: none;
+    background: rgba(255,255,255,0.03);
+  }
+
+  /* Status icons */
+  .status-icon {
+    font-size: 3rem;
+    margin-bottom: 16px;
+    display: block;
+  }
+  .status-icon.success { filter: drop-shadow(0 0 12px var(--success)); }
+  .status-icon.error   { filter: drop-shadow(0 0 12px var(--error)); }
+
+  /* Stats chips */
+  .chips {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 20px 0;
+  }
+  .chip {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 50px;
+    padding: 6px 14px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+  }
+
+  /* Error code block */
+  pre {
+    background: #0d0d16;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    font-size: 0.78rem;
+    color: var(--error);
+    text-align: left;
+    overflow-x: auto;
+    margin-top: 16px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .footer-note {
+    margin-top: 24px;
+    font-size: 0.72rem;
+    color: var(--muted);
+    opacity: 0.6;
+  }
+</style>
+"""
+
+def _page(body: str) -> str:
+    """Wrap body content in the full HTML shell."""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>{_BASE_STYLE}<title>Juice WRLD Bot</title></head>
+<body>
+<div class="orb2"></div>
+{body}
+</body>
+</html>"""
+
 
 def set_stats_callback(cb: Callable[[int], Optional[Dict[str, Any]]]) -> None:
     """Register a callback that returns user stats given a Discord user ID."""
@@ -92,12 +377,19 @@ def _build_oauth_url() -> str:
 async def linked_roles_redirect():
     """Redirect the user to Discord's OAuth2 consent page."""
     if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
-        return HTMLResponse(
-            "<h3>Linked Roles not configured.</h3>"
-            "<p>The bot owner needs to set DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, "
-            "and LINKED_ROLES_URL environment variables.</p>",
-            status_code=503,
-        )
+        return HTMLResponse(_page("""
+<div class="card">
+  <span class="status-icon error">&#9888;&#65039;</span>
+  <span class="label">Configuration Error</span>
+  <h2>Not Configured</h2>
+  <p>The bot owner needs to set the required environment variables before Linked Roles can be used.</p>
+  <div class="divider"></div>
+  <pre>DISCORD_CLIENT_ID
+DISCORD_CLIENT_SECRET
+LINKED_ROLES_URL</pre>
+  <a href="/" class="btn btn-secondary">&#8592; Go Back</a>
+</div>
+"""), status_code=503)
     return RedirectResponse(_build_oauth_url())
 
 
@@ -106,7 +398,15 @@ async def oauth_callback(request: Request):
     """Handle the OAuth2 callback from Discord."""
     code = request.query_params.get("code")
     if not code:
-        return HTMLResponse("<h3>Missing authorization code.</h3>", status_code=400)
+        return HTMLResponse(_page("""
+<div class="card">
+  <span class="status-icon error">&#10060;</span>
+  <span class="label">Error 400</span>
+  <h2>Missing Code</h2>
+  <p>No authorization code was provided. Please try connecting again from Discord.</p>
+  <a href="/" class="btn btn-secondary">&#8592; Go Back</a>
+</div>
+"""), status_code=400)
 
     # Exchange the code for an access token.
     token_url = f"{DISCORD_API}/oauth2/token"
@@ -123,22 +423,44 @@ async def oauth_callback(request: Request):
         async with session.post(token_url, data=data) as resp:
             if resp.status != 200:
                 body = await resp.text()
-                return HTMLResponse(
-                    f"<h3>Token exchange failed.</h3><pre>{resp.status}</pre>",
-                    status_code=400,
-                )
+                return HTMLResponse(_page(f"""
+<div class="card">
+  <span class="status-icon error">&#10060;</span>
+  <span class="label">Error {resp.status}</span>
+  <h2>Token Exchange Failed</h2>
+  <p>Could not exchange your authorization code for an access token. Please try again.</p>
+  <pre>{resp.status}</pre>
+  <a href="/" class="btn btn-secondary">&#8592; Go Back</a>
+</div>
+"""), status_code=400)
             token_data = await resp.json()
 
         access_token = token_data.get("access_token")
         if not access_token:
-            return HTMLResponse("<h3>No access token received.</h3>", status_code=400)
+            return HTMLResponse(_page("""
+<div class="card">
+  <span class="status-icon error">&#10060;</span>
+  <span class="label">Error 400</span>
+  <h2>No Access Token</h2>
+  <p>Discord did not return an access token. Please try connecting again.</p>
+  <a href="/" class="btn btn-secondary">&#8592; Go Back</a>
+</div>
+"""), status_code=400)
 
         auth_headers = {"Authorization": f"Bearer {access_token}"}
 
         # Step 2: Fetch the user's identity
         async with session.get(f"{DISCORD_API}/users/@me", headers=auth_headers) as resp:
             if resp.status != 200:
-                return HTMLResponse("<h3>Failed to fetch user info.</h3>", status_code=400)
+                return HTMLResponse(_page("""
+<div class="card">
+  <span class="status-icon error">&#10060;</span>
+  <span class="label">Error 400</span>
+  <h2>User Fetch Failed</h2>
+  <p>We could not retrieve your Discord profile. Please try again.</p>
+  <a href="/" class="btn btn-secondary">&#8592; Go Back</a>
+</div>
+"""), status_code=400)
             user_data = await resp.json()
 
         user_id = int(user_data["id"])
@@ -170,22 +492,67 @@ async def oauth_callback(request: Request):
         }
         async with session.put(metadata_url, json=payload, headers=auth_headers) as resp:
             if resp.status == 200:
-                return HTMLResponse(
-                    "<h2>✅ Linked Roles connected!</h2>"
-                    f"<p>Welcome, <b>{username}</b>. Your listening stats have been synced.</p>"
-                    "<p>You can close this page and return to Discord.</p>"
-                )
+                plays = metadata_values["total_plays"]
+                hours = metadata_values["total_listen_hours"]
+                songs = metadata_values["unique_songs"]
+                return HTMLResponse(_page(f"""
+<div class="card">
+  <div class="logo-wrap">
+    <img src="https://i.imgur.com/walM89T.png" alt="Bot Logo">
+  </div>
+  <span class="status-icon success">&#10003;</span>
+  <span class="label">All Set</span>
+  <h2>You're Connected!</h2>
+  <p>Welcome, <strong style="color: var(--text);">{username}</strong>. Your listening stats have been synced to Discord.</p>
+  <div class="chips">
+    <span class="chip">&#127911; {plays} Plays</span>
+    <span class="chip">&#9202; {hours}h Listened</span>
+    <span class="chip">&#127925; {songs} Songs</span>
+  </div>
+  <div class="divider"></div>
+  <p style="font-size:0.85rem;">You can close this page and return to Discord. Your roles will update shortly.</p>
+</div>
+"""))
             body = await resp.text()
-            return HTMLResponse(
-                f"<h3>Failed to update role connection.</h3><pre>{resp.status}: {body}</pre>",
-                status_code=500,
-            )
+            return HTMLResponse(_page(f"""
+<div class="card">
+  <span class="status-icon error">&#10060;</span>
+  <span class="label">Error 500</span>
+  <h2>Sync Failed</h2>
+  <p>We were unable to update your role connection data on Discord. Please try again later.</p>
+  <pre>{resp.status}: {body}</pre>
+  <a href="/" class="btn btn-secondary">&#8592; Go Back</a>
+</div>
+"""), status_code=500)
 
 
 @app.get("/")
 async def index():
-    """Simple landing page."""
-    return HTMLResponse(
-        "<h2>Juice WRLD Discord Bot</h2>"
-        '<p><a href="/linked-roles">Connect Linked Roles</a></p>'
-    )
+    """Landing page."""
+    return HTMLResponse(_page("""
+<div class="card">
+  <div class="logo-wrap">
+    <img src="https://i.imgur.com/walM89T.png" alt="Bot Logo">
+    <span class="label">Music Bot</span>
+  </div>
+
+  <img src="https://i.imgur.com/8jo57P9.jpeg" alt="Banner" class="banner">
+
+  <h1>Juice WRLD Bot</h1>
+  <p>Track your listening stats and unlock exclusive Discord roles based on how much you vibe.</p>
+
+  <div class="chips">
+    <span class="chip">&#127911; Track Plays</span>
+    <span class="chip">&#9202; Listen Hours</span>
+    <span class="chip">&#127925; Unique Songs</span>
+  </div>
+
+  <div class="divider"></div>
+
+  <a href="/linked-roles" class="btn">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7h3a5 5 0 0 1 5 5 5 5 0 0 1-5 5h-3m-6 0H6a5 5 0 0 1-5-5 5 5 0 0 1 5-5h3"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+    Connect Linked Roles
+  </a>
+  <p class="footer-note">You will be redirected to Discord to authorize.</p>
+</div>
+"""))
