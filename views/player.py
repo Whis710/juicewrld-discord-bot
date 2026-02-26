@@ -615,7 +615,13 @@ class PlayerView(discord.ui.View):
             )
             return
 
-        view = PlaylistPaginationView(ctx=self.ctx, playlists=playlists, user=user, interaction=interaction)
+        view = PlaylistPaginationView(
+            ctx=self.ctx,
+            playlists=playlists,
+            user=user,
+            interaction=interaction,
+            queue_fn=self._queue_fn,
+        )
         embed = view.build_embed()
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
