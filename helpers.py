@@ -15,7 +15,7 @@ from discord.ext import commands
 
 from client import JuiceWRLDAPI
 from genius_client import GeniusClient
-from constants import JUICEWRLD_API_BASE_URL, NOTHING_PLAYING, GENIUS_TOKEN
+from constants import JUICEWRLD_API_BASE_URL, NOTHING_PLAYING, GENIUS_API_TOKEN
 from exceptions import JuiceWRLDAPIError
 import state
 
