@@ -10,12 +10,12 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-import aiohttp
 import discord
 from discord.ext import commands
 
 from client import JuiceWRLDAPI
-from constants import JUICEWRLD_API_BASE_URL, NOTHING_PLAYING
+from genius_client import GeniusClient
+from constants import JUICEWRLD_API_BASE_URL, NOTHING_PLAYING, GENIUS_TOKEN
 from exceptions import JuiceWRLDAPIError
 import state
 
@@ -33,30 +33,25 @@ def get_api() -> JuiceWRLDAPI:
     return _api_client
 
 
-# ── Shared Discord REST session ──────────────────────────────────────
-
-_discord_session: Optional[aiohttp.ClientSession] = None
-
-
-async def get_discord_session() -> aiohttp.ClientSession:
-    """Return a shared aiohttp session for Discord REST API calls."""
-    global _discord_session
-    if _discord_session is None or _discord_session.closed:
-        _discord_session = aiohttp.ClientSession()
-    return _discord_session
-
-
-# ── Cleanup ──────────────────────────────────────────────────────────
-
-async def close_all() -> None:
-    """Close all shared sessions (call during bot shutdown)."""
-    global _api_client, _discord_session
+async def close_api() -> None:
+    """Close the shared API client (call during bot shutdown)."""
+    global _api_client
     if _api_client is not None:
         await _api_client.close()
         _api_client = None
-    if _discord_session is not None and not _discord_session.closed:
-        await _discord_session.close()
-        _discord_session = None
+
+
+# ── Singleton Genius client ──────────────────────────────────────────
+
+_genius_client: Optional[GeniusClient] = None
+
+
+def get_genius() -> Optional[GeniusClient]:
+    """Return the shared Genius client, or None if no token is configured."""
+    global _genius_client
+    if _genius_client is None and GENIUS_TOKEN:
+        _genius_client = GeniusClient(access_token=GENIUS_TOKEN)
+    return _genius_client
 
 
 # ── Parsing / formatting helpers ─────────────────────────────────────

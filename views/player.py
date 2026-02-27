@@ -43,18 +43,39 @@ class NowPlayingInfoView(discord.ui.View):
         meta = info.get("metadata") or {}
         lyrics = meta.get("lyrics")
 
-        if not lyrics:
-            await interaction.response.send_message(
-                "No lyrics are stored for this song.", ephemeral=True
+        if lyrics:
+            # Stored lyrics found — show them directly.
+            text = str(lyrics)[:4096]
+            embed = discord.Embed(title=f"Lyrics - {title}", description=text)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # No stored lyrics — try Genius as fallback.
+        await interaction.response.defer(ephemeral=True)
+        genius = helpers.get_genius()
+        if not genius:
+            await interaction.followup.send(
+                "No lyrics stored for this song and no Genius token is configured.
+"
+                "Set the  environment variable to enable lyrics lookup.",
+                ephemeral=True,
             )
             return
 
-        text = str(lyrics)
-        # Discord embed description max is 4096 characters.
-        text = text[:4096]
-
-        embed = discord.Embed(title=f"Lyrics - {title}", description=text)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        result = await genius.get_song_lyrics(title)
+        if result:
+            embed = discord.Embed(
+                title=f"Lyrics - {title}",
+                description=result,
+                colour=discord.Colour.yellow(),
+            )
+            embed.set_footer(text="Powered by Genius")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.followup.send(
+                f"No lyrics found for **{title}** on Genius.",
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="Snippets", style=discord.ButtonStyle.secondary)
     async def snippets_button(
