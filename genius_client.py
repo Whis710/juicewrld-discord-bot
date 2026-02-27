@@ -25,7 +25,7 @@ class GeniusClient:
                     skip_non_songs=True,
                     excluded_terms=["(Remix)", "(Live)"],
                     verbose=False,          # suppress console spam
-                    remove_section_headers=True,  # strip [Chorus], [Verse] etc.
+                    remove_section_headers=False,  # keep [Chorus], [Verse] etc. for display
                     retries=2,
                 )
             except ImportError:
@@ -56,8 +56,7 @@ class GeniusClient:
                 lambda: genius.search_song(song_title, "Juice WRLD"),
             )
             if song and song.lyrics:
-                # Truncate to Discord embed description limit.
-                return song.lyrics[:4096]
+                return song.lyrics
             return None
         except Exception as e:
             print(f"[genius] Error fetching lyrics for '{song_title}': {e}")

@@ -11,6 +11,83 @@ import helpers
 import state
 from views.playlist import PlaylistPaginationView
 
+
+class LyricsPaginationView(discord.ui.View):
+    """Ephemeral paginated view for displaying lyrics with section headers."""
+
+    def __init__(self, *, title: str, lyrics: str, url: Optional[str] = None) -> None:
+        super().__init__(timeout=120)
+        self.title = title
+        self.url = url
+        self.pages = self._split_lyrics(lyrics)
+        self.current_page = 0
+        self.total_pages = len(self.pages)
+        self._update_buttons()
+
+    def _split_lyrics(self, lyrics: str) -> List[str]:
+        """Split lyrics into pages at section headers, respecting the 4096 char limit."""
+        import re
+        # Split on section headers like [Chorus], [Verse 1], [Bridge] etc.
+        sections = re.split(r'(\[.*?\])', lyrics)
+
+        pages: List[str] = []
+        current = ""
+
+        for part in sections:
+            candidate = current + part
+            if len(candidate) > 3900:
+                # Current page is full — save it and start a new one.
+                if current.strip():
+                    pages.append(current.strip())
+                current = part
+            else:
+                current = candidate
+
+        if current.strip():
+            pages.append(current.strip())
+
+        return pages if pages else [lyrics[:3900]]
+
+    def _update_buttons(self) -> None:
+        """Enable/disable nav buttons based on current page."""
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                if item.custom_id == "lyrics_prev":
+                    item.disabled = self.current_page == 0
+                elif item.custom_id == "lyrics_next":
+                    item.disabled = self.current_page >= self.total_pages - 1
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🎵 Lyrics — {self.title}",
+            description=self.pages[self.current_page],
+            colour=discord.Colour.yellow(),
+        )
+        footer = f"Page {self.current_page + 1}/{self.total_pages} • Powered by Genius"
+        if self.url:
+            footer += f" • Full lyrics: {self.url}"
+        embed.set_footer(text=footer)
+        return embed
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, custom_id="lyrics_prev")
+    async def prev_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.current_page > 0:
+            self.current_page -= 1
+            self._update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, custom_id="lyrics_next")
+    async def next_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self._update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+
 class NowPlayingInfoView(discord.ui.View):
     """Ephemeral view for extra track info (lyrics/snippets) shown from ℹ button."""
 
@@ -43,39 +120,35 @@ class NowPlayingInfoView(discord.ui.View):
         meta = info.get("metadata") or {}
         lyrics = meta.get("lyrics")
 
-        if lyrics:
-            # Stored lyrics found — show them directly.
-            text = str(lyrics)[:4096]
-            embed = discord.Embed(title=f"Lyrics - {title}", description=text)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # No stored lyrics — try Genius as fallback.
+        # Defer early — Genius lookup can take a moment.
         await interaction.response.defer(ephemeral=True)
-        genius = helpers.get_genius()
-        if not genius:
-            await interaction.followup.send(
-                "No lyrics stored for this song and no Genius token is configured.
-"
-                "Set the  environment variable to enable lyrics lookup.",
-                ephemeral=True,
-            )
-            return
 
-        result = await genius.get_song_lyrics(title)
-        if result:
-            embed = discord.Embed(
-                title=f"Lyrics - {title}",
-                description=result,
-                colour=discord.Colour.yellow(),
-            )
-            embed.set_footer(text="Powered by Genius")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
+        url: Optional[str] = None
+
+        if not lyrics:
+            # No stored lyrics — try Genius as fallback.
+            genius = helpers.get_genius()
+            if not genius:
+                await interaction.followup.send(
+                    "No lyrics stored for this song and no Genius token is configured. "
+                    "Set the `GENIUS_TOKEN` environment variable to enable lyrics lookup.",
+                    ephemeral=True,
+                )
+                return
+
+            lyrics = await genius.get_song_lyrics(title)
+            url = await genius.get_lyrics_url(title)
+
+        if not lyrics:
             await interaction.followup.send(
                 f"No lyrics found for **{title}** on Genius.",
                 ephemeral=True,
             )
+            return
+
+        view = LyricsPaginationView(title=title, lyrics=str(lyrics), url=url)
+        embed = view.build_embed()
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="Snippets", style=discord.ButtonStyle.secondary)
     async def snippets_button(
