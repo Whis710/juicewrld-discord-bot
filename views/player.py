@@ -55,8 +55,7 @@ class NowPlayingInfoView(discord.ui.View):
         genius = helpers.get_genius()
         if not genius:
             await interaction.followup.send(
-                "No lyrics stored for this song and no Genius token is configured.
-"
+                "No lyrics stored for this song and no Genius token is configured."
                 "Set the  environment variable to enable lyrics lookup.",
                 ephemeral=True,
             )
