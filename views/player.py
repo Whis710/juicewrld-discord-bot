@@ -88,6 +88,67 @@ class LyricsPaginationView(discord.ui.View):
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
+
+class LyricsSongSelectView(discord.ui.View):
+    """Ephemeral dropdown letting the user pick which Genius result to show lyrics for."""
+
+    def __init__(
+        self,
+        *,
+        song_title: str,
+        candidates: list,
+    ) -> None:
+        super().__init__(timeout=60)
+        self.song_title = song_title
+        self.candidates = candidates  # List of {id, title, url}
+
+        options = [
+            discord.SelectOption(
+                label=c["title"][:100],
+                value=str(c["id"]),
+                description=c["url"][:100] if c.get("url") else None,
+            )
+            for c in candidates[:5]  # Discord select max 25, we cap at 5
+        ]
+
+        select = discord.ui.Select(
+            placeholder="Choose the correct version…",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        """Fetch lyrics for the selected song and show the paginated view."""
+        await interaction.response.defer(ephemeral=True)
+
+        song_id = int(interaction.data["values"][0])
+        # Find the matching candidate to get its title and url.
+        candidate = next((c for c in self.candidates if c["id"] == song_id), None)
+        display_title = candidate["title"] if candidate else self.song_title
+        url = candidate["url"] if candidate else None
+
+        genius = helpers.get_genius()
+        if not genius:
+            await interaction.followup.send(
+                "Genius client not available.", ephemeral=True
+            )
+            return
+
+        lyrics = await genius.get_lyrics_by_id(song_id)
+        if not lyrics:
+            await interaction.followup.send(
+                f"Could not fetch lyrics for **{display_title}**.", ephemeral=True
+            )
+            return
+
+        view = LyricsPaginationView(title=display_title, lyrics=lyrics, url=url)
+        embed = view.build_embed()
+        await interaction.edit_original_response(embed=embed, view=view)
+
+
 class NowPlayingInfoView(discord.ui.View):
     """Ephemeral view for extra track info (lyrics/snippets) shown from ℹ button."""
 
@@ -123,32 +184,54 @@ class NowPlayingInfoView(discord.ui.View):
         # Defer early — Genius lookup can take a moment.
         await interaction.response.defer(ephemeral=True)
 
-        url: Optional[str] = None
+        if lyrics:
+            # Stored lyrics — show directly without Genius search.
+            view = LyricsPaginationView(title=title, lyrics=str(lyrics))
+            embed = view.build_embed()
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            return
 
-        if not lyrics:
-            # No stored lyrics — try Genius as fallback.
-            genius = helpers.get_genius()
-            if not genius:
-                await interaction.followup.send(
-                    "No lyrics stored for this song and no Genius token is configured. "
-                    "Set the `GENIUS_TOKEN` environment variable to enable lyrics lookup.",
-                    ephemeral=True,
-                )
-                return
+        # No stored lyrics — search Genius for candidates.
+        genius = helpers.get_genius()
+        if not genius:
+            await interaction.followup.send(
+                "No lyrics stored for this song and no Genius token is configured. "
+                "Set the `GENIUS_TOKEN` environment variable to enable lyrics lookup.",
+                ephemeral=True,
+            )
+            return
 
-            lyrics = await genius.get_song_lyrics(title)
-            url = await genius.get_lyrics_url(title)
+        candidates = await genius.search_candidates(title, max_results=5)
 
-        if not lyrics:
+        if not candidates:
             await interaction.followup.send(
                 f"No lyrics found for **{title}** on Genius.",
                 ephemeral=True,
             )
             return
 
-        view = LyricsPaginationView(title=title, lyrics=str(lyrics), url=url)
-        embed = view.build_embed()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        if len(candidates) == 1:
+            # Only one result — skip the dropdown and load lyrics directly.
+            c = candidates[0]
+            lyrics = await genius.get_lyrics_by_id(c["id"])
+            if not lyrics:
+                await interaction.followup.send(
+                    f"Could not fetch lyrics for **{c['title']}**.", ephemeral=True
+                )
+                return
+            view = LyricsPaginationView(title=c["title"], lyrics=lyrics, url=c.get("url"))
+            embed = view.build_embed()
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            return
+
+        # Multiple results — show dropdown so user picks the right version.
+        select_view = LyricsSongSelectView(song_title=title, candidates=candidates)
+        embed = discord.Embed(
+            title=f"🎵 Lyrics — {title}",
+            description=f"Found **{len(candidates)}** versions on Genius. Pick the correct one:",
+            colour=discord.Colour.yellow(),
+        )
+        await interaction.followup.send(embed=embed, view=select_view, ephemeral=True)
 
     @discord.ui.button(label="Snippets", style=discord.ButtonStyle.secondary)
     async def snippets_button(
