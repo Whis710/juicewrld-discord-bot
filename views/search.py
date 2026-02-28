@@ -343,7 +343,7 @@ class SingleSongResultView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
         # Send a separate ephemeral message with the Lyrics/Snippets buttons.
-        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta)
+        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta, ctx=self.ctx, queue_fn=self._queue_fn)
         await interaction.followup.send(
             "🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True
         )
@@ -931,7 +931,7 @@ class SearchPaginationView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
         # Send Lyrics/Snippets buttons as a separate ephemeral message.
-        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta)
+        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta, ctx=self.ctx, queue_fn=self._queue_fn)
         await interaction.followup.send(
             "🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True
         )

@@ -6,9 +6,10 @@ import random
 import discord
 from discord.ext import commands
 
-from constants import NOTHING_PLAYING
+from constants import NOTHING_PLAYING, JUICEWRLD_API_BASE_URL
 import helpers
 import state
+from urllib.parse import quote
 from views.playlist import PlaylistPaginationView
 
 
@@ -149,6 +150,130 @@ class LyricsSongSelectView(discord.ui.View):
         await interaction.edit_original_response(embed=embed, view=view)
 
 
+
+class SnippetsPaginationView(discord.ui.View):
+    """Ephemeral paginated view for MP4 snippets — one per page with Play Now / Add to Queue."""
+
+    def __init__(
+        self,
+        *,
+        song_title: str,
+        files: List[Dict[str, Any]],  # Each dict: {name, path, stream_url}
+        ctx: commands.Context,
+        queue_fn: Optional[Callable] = None,
+    ) -> None:
+        super().__init__(timeout=120)
+        self.song_title = song_title
+        self.files = files
+        self.ctx = ctx
+        self._queue_fn = queue_fn
+        self.current_page = 0
+        self.total_pages = len(files)
+        self._rebuild_buttons()
+
+    def _rebuild_buttons(self) -> None:
+        self.clear_items()
+
+        prev_btn = discord.ui.Button(
+            label="◀", style=discord.ButtonStyle.secondary,
+            disabled=self.current_page == 0, row=0
+        )
+        prev_btn.callback = self._on_prev
+        self.add_item(prev_btn)
+
+        next_btn = discord.ui.Button(
+            label="▶", style=discord.ButtonStyle.secondary,
+            disabled=self.current_page >= self.total_pages - 1, row=0
+        )
+        next_btn.callback = self._on_next
+        self.add_item(next_btn)
+
+        play_btn = discord.ui.Button(label="▶️ Play Now", style=discord.ButtonStyle.danger, row=1)
+        play_btn.callback = self._on_play_now
+        self.add_item(play_btn)
+
+        if self._queue_fn:
+            queue_btn = discord.ui.Button(label="📥 Add to Queue", style=discord.ButtonStyle.secondary, row=1)
+            queue_btn.callback = self._on_add_to_queue
+            self.add_item(queue_btn)
+
+    def build_embed(self) -> discord.Embed:
+        f = self.files[self.current_page]
+        name = f["name"]
+        stream_url = f["stream_url"]
+
+        embed = discord.Embed(
+            title=f"📹 Snippets — {self.song_title}",
+            description=f"**{name}**
+
+{stream_url}",
+            colour=discord.Colour.blurple(),
+        )
+        embed.set_footer(text=f"Snippet {self.current_page + 1}/{self.total_pages}")
+        return embed
+
+    async def _on_prev(self, interaction: discord.Interaction) -> None:
+        if self.current_page > 0:
+            self.current_page -= 1
+            self._rebuild_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_next(self, interaction: discord.Interaction) -> None:
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self._rebuild_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_play_now(self, interaction: discord.Interaction) -> None:
+        """Play the current snippet immediately in voice, interrupting current song."""
+        await interaction.response.defer(ephemeral=True)
+        f = self.files[self.current_page]
+        if self._queue_fn is None:
+            await interaction.followup.send("Playback not available.", ephemeral=True)
+            return
+        voice = await helpers.ensure_voice_connected(self.ctx.guild, interaction.user)
+        if not voice:
+            await interaction.followup.send(
+                "You need to be in a voice channel to play snippets.", ephemeral=True
+            )
+            return
+        # Stop current playback so this plays immediately.
+        if voice.is_playing() or voice.is_paused():
+            voice.stop()
+        await self._queue_fn(
+            self.ctx,
+            stream_url=f["stream_url"],
+            title=f["name"],
+            path=f["path"],
+            metadata={},
+            duration_seconds=None,
+            silent=False,
+        )
+        await interaction.followup.send(
+            f"▶️ Playing snippet **{f['name']}**", ephemeral=True
+        )
+
+    async def _on_add_to_queue(self, interaction: discord.Interaction) -> None:
+        """Add the current snippet to the queue."""
+        await interaction.response.defer(ephemeral=True)
+        f = self.files[self.current_page]
+        if self._queue_fn is None:
+            await interaction.followup.send("Queue not available.", ephemeral=True)
+            return
+        await self._queue_fn(
+            self.ctx,
+            stream_url=f["stream_url"],
+            title=f["name"],
+            path=f["path"],
+            metadata={},
+            duration_seconds=None,
+            silent=True,
+        )
+        await interaction.followup.send(
+            f"📥 Added snippet **{f['name']}** to queue.", ephemeral=True
+        )
+
+
 class NowPlayingInfoView(discord.ui.View):
     """Ephemeral view for extra track info (lyrics/snippets) shown from ℹ button.
 
@@ -163,11 +288,15 @@ class NowPlayingInfoView(discord.ui.View):
         *,
         song_title: Optional[str] = None,
         song_metadata: Optional[Dict[str, Any]] = None,
+        ctx: Optional[commands.Context] = None,
+        queue_fn: Optional[Callable] = None,
     ) -> None:
         super().__init__(timeout=60)
         # If set, these override the guild_now_playing lookup in button callbacks.
         self._song_title = song_title
         self._song_metadata = song_metadata or {}
+        self._ctx = ctx          # Needed for snippet playback
+        self._queue_fn = queue_fn  # Needed for snippet playback
 
     @discord.ui.button(label="Lyrics", style=discord.ButtonStyle.secondary)
     async def lyrics_button(
@@ -260,14 +389,12 @@ class NowPlayingInfoView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:  # pragma: no cover - UI callback
-        """Show snippets for the currently playing track in a separate embed."""
+        """Browse Snippets/ folder for MP4 files for the current song."""
 
-        # If a song was passed in directly (e.g. from search), use it.
-        # Otherwise read from the guild's now-playing state.
+        # Resolve song title from injected value or guild now-playing state.
         if self._song_title:
             title = self._song_title
-            meta = self._song_metadata
-            snippets = meta.get("snippets") or []
+            ctx = self._ctx
         else:
             guild = interaction.guild
             if not guild:
@@ -284,36 +411,51 @@ class NowPlayingInfoView(discord.ui.View):
                 return
 
             title = str(info.get("title", "Unknown"))
-            meta = info.get("metadata") or {}
-            snippets = meta.get("snippets") or []
+            ctx = info.get("ctx")
 
-        if not snippets:
-            await interaction.response.send_message(
-                "No snippets are stored for this song.", ephemeral=True
+        await interaction.response.defer(ephemeral=True)
+
+        # Browse the Snippets folder for MP4 files matching the song title.
+        api = helpers.get_api()
+        try:
+            directory = await api.browse_files(path="Snippets", search=title)
+        except Exception as e:
+            await interaction.followup.send(
+                f"Failed to browse snippets: {e}", ephemeral=True
             )
             return
 
-        lines: List[str] = []
-        if isinstance(snippets, (list, tuple)):
-            for snip in snippets:
-                if isinstance(snip, dict):
-                    label = (
-                        snip.get("label")
-                        or snip.get("name")
-                        or snip.get("id")
-                        or str(snip)
-                    )
-                    lines.append(f"- {label}")
-                else:
-                    lines.append(f"- {snip}")
-        else:
-            lines.append(str(snippets))
+        files = [
+            item for item in getattr(directory, "items", [])
+            if getattr(item, "type", "file") == "file"
+            and getattr(item, "name", "").lower().endswith(".mp4")
+        ]
 
-        body = "\n".join(lines)
-        body = body[:4096]
+        if not files:
+            await interaction.followup.send(
+                f"No MP4 snippets found for **{title}**.", ephemeral=True
+            )
+            return
 
-        embed = discord.Embed(title=f"Snippets - {title}", description=body)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Build list of {name, path, stream_url} dicts.
+        base_url = JUICEWRLD_API_BASE_URL.rstrip("/")
+        snippet_list = [
+            {
+                "name": getattr(f, "name", "Unknown"),
+                "path": getattr(f, "path", ""),
+                "stream_url": f"{base_url}/juicewrld/files/download/?path={quote(getattr(f, 'path', ''))}",
+            }
+            for f in files
+        ]
+
+        view = SnippetsPaginationView(
+            song_title=title,
+            files=snippet_list,
+            ctx=ctx,
+            queue_fn=self._queue_fn,
+        )
+        embed = view.build_embed()
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 class PlayerView(discord.ui.View):
@@ -732,7 +874,7 @@ class PlayerView(discord.ui.View):
 
         # Attach a temporary info view so the user can access lyrics/snippets
         # from this Now Playing snapshot only.
-        info_view = NowPlayingInfoView()
+        info_view = NowPlayingInfoView(ctx=self.ctx, queue_fn=self._queue_fn)
         await interaction.response.send_message(embed=embed, view=info_view, ephemeral=True)
 
     @discord.ui.button(label="❤ Like", style=discord.ButtonStyle.success)
