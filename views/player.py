@@ -204,9 +204,7 @@ class SnippetsPaginationView(discord.ui.View):
 
         embed = discord.Embed(
             title=f"📹 Snippets — {self.song_title}",
-            description=f"**{name}**
-
-{stream_url}",
+            description=f"**{name}**\n\n{stream_url}",
             colour=discord.Colour.blurple(),
         )
         embed.set_footer(text=f"Snippet {self.current_page + 1}/{self.total_pages}")
