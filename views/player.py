@@ -151,8 +151,31 @@ class LyricsSongSelectView(discord.ui.View):
 
 
 
+class SnippetDeleteView(discord.ui.View):
+    """Public message with a Delete button only the requester can use."""
+
+    def __init__(self, *, requester_id: int) -> None:
+        super().__init__(timeout=600)  # 10 minute timeout
+        self.requester_id = requester_id
+
+    @discord.ui.button(label="🗑️ Delete", style=discord.ButtonStyle.danger)
+    async def delete_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "Only the user who opened snippets can delete this.", ephemeral=True
+            )
+            return
+        await interaction.message.delete()
+
+
 class SnippetsPaginationView(discord.ui.View):
-    """Ephemeral paginated view for MP4 snippets — one per page with Play Now / Add to Queue."""
+    """Ephemeral paginated view for MP4 snippets — one per page with Play Now / Add to Queue.
+
+    Each page posts the MP4 URL publicly in the channel (so Discord embeds it as a video)
+    with a Delete button. The ephemeral paginator handles navigation and playback controls.
+    """
 
     def __init__(
         self,
@@ -169,6 +192,7 @@ class SnippetsPaginationView(discord.ui.View):
         self._queue_fn = queue_fn
         self.current_page = 0
         self.total_pages = len(files)
+        self._public_msg: Optional[discord.Message] = None  # Tracks the current public video post
         self._rebuild_buttons()
 
     def _rebuild_buttons(self) -> None:
@@ -199,28 +223,46 @@ class SnippetsPaginationView(discord.ui.View):
 
     def build_embed(self) -> discord.Embed:
         f = self.files[self.current_page]
-        name = f["name"]
-        stream_url = f["stream_url"]
-
         embed = discord.Embed(
             title=f"📹 Snippets — {self.song_title}",
-            description=f"**{name}**\n\n{stream_url}",
+            description=f"**{f['name']}**",
             colour=discord.Colour.blurple(),
         )
-        embed.set_footer(text=f"Snippet {self.current_page + 1}/{self.total_pages}")
+        embed.set_footer(text=f"Snippet {self.current_page + 1}/{self.total_pages} • Video posted below ↓")
         return embed
+
+    async def _post_public_video(self, interaction: discord.Interaction) -> None:
+        """Delete previous public video post and send the current one publicly."""
+        # Delete previous public post if it exists.
+        if self._public_msg is not None:
+            try:
+                await self._public_msg.delete()
+            except Exception:
+                pass
+            self._public_msg = None
+
+        f = self.files[self.current_page]
+        delete_view = SnippetDeleteView(requester_id=interaction.user.id)
+        channel = interaction.channel
+        if channel and isinstance(channel, discord.abc.Messageable):
+            self._public_msg = await channel.send(
+                f"📹 **{f['name']}** — {self.song_title}\n{f['stream_url']}",
+                view=delete_view,
+            )
 
     async def _on_prev(self, interaction: discord.Interaction) -> None:
         if self.current_page > 0:
             self.current_page -= 1
             self._rebuild_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await self._post_public_video(interaction)
 
     async def _on_next(self, interaction: discord.Interaction) -> None:
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
             self._rebuild_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await self._post_public_video(interaction)
 
     async def _on_play_now(self, interaction: discord.Interaction) -> None:
         """Play the current snippet immediately in voice, interrupting current song."""
@@ -235,7 +277,6 @@ class SnippetsPaginationView(discord.ui.View):
                 "You need to be in a voice channel to play snippets.", ephemeral=True
             )
             return
-        # Stop current playback so this plays immediately.
         if voice.is_playing() or voice.is_paused():
             voice.stop()
         await self._queue_fn(
@@ -454,6 +495,16 @@ class NowPlayingInfoView(discord.ui.View):
         )
         embed = view.build_embed()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        # Post the first video publicly so Discord embeds it with a Delete button.
+        delete_view = SnippetDeleteView(requester_id=interaction.user.id)
+        channel = interaction.channel
+        if channel and isinstance(channel, discord.abc.Messageable):
+            first = snippet_list[0]
+            view._public_msg = await channel.send(
+                f"📹 **{first['name']}** — {title}\n{first['stream_url']}",
+                view=delete_view,
+            )
 
 
 class PlayerView(discord.ui.View):
