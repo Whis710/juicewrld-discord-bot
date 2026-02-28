@@ -1020,6 +1020,133 @@ class PlayerView(discord.ui.View):
             await helpers.send_ephemeral_temporary(interaction, "Radio started.")
 
 
+def build_song_info_embed(song_obj: Any, *, path: Optional[str] = None) -> discord.Embed:
+    """Build a rich song info embed from a song object — same layout as the player ℹ button.
+
+    Accepts either a Song model object (from the API) or a metadata dict.
+    Used by search views so they match the player info embed exactly.
+    """
+    import helpers as _helpers
+
+    # Support both song objects and metadata dicts.
+    def _get(attr: str, default=None):
+        if isinstance(song_obj, dict):
+            return song_obj.get(attr, default)
+        return getattr(song_obj, attr, default)
+
+    name = _get("name") or _get("title") or "Unknown"
+    meta = _helpers.build_song_metadata_from_song(song_obj, path=path) if not isinstance(song_obj, dict) else song_obj
+
+    embed = discord.Embed(title="Song Info", description=name)
+
+    image_url = meta.get("image_url") or _get("image_url")
+    if image_url:
+        embed.set_thumbnail(url=image_url)
+
+    song_id_val = meta.get("id") or meta.get("song_id")
+    if song_id_val is not None:
+        embed.add_field(name="ID", value=str(song_id_val), inline=True)
+    if meta.get("public_id") is not None:
+        embed.add_field(name="Public ID", value=str(meta.get("public_id")), inline=True)
+    if meta.get("original_key"):
+        embed.add_field(name="Original Key", value=str(meta.get("original_key")), inline=True)
+    if meta.get("category"):
+        embed.add_field(name="Category", value=str(meta.get("category")), inline=True)
+
+    full_path = meta.get("path") or path
+    if full_path:
+        embed.add_field(name="Path", value=f"`{full_path}`", inline=False)
+
+    era_data = meta.get("era")
+    era_name = era_desc = era_time_frame = era_play_count = None
+    if isinstance(era_data, dict):
+        era_name = era_data.get("name")
+        era_desc = era_data.get("description")
+        era_time_frame = era_data.get("time_frame")
+        era_play_count = era_data.get("play_count")
+    elif era_data:
+        era_name = str(era_data)
+    if any([era_name, era_desc, era_time_frame, era_play_count]):
+        lines: list[str] = []
+        if era_name:
+            lines.append(f"Name: {era_name}")
+        if era_desc:
+            lines.append(f"Description: {era_desc}")
+        if era_time_frame:
+            lines.append(f"Time frame: {era_time_frame}")
+        if era_play_count is not None:
+            lines.append(f"Play count: {era_play_count}")
+        embed.add_field(name="Era", value="\n".join(lines)[:1024], inline=False)
+
+    track_titles = meta.get("track_titles") or []
+    if isinstance(track_titles, (list, tuple)) and track_titles:
+        embed.add_field(name="Track titles", value=", ".join(map(str, track_titles))[:1024], inline=False)
+
+    if meta.get("session_titles") or meta.get("session_tracking"):
+        sess_lines = []
+        if meta.get("session_titles"):
+            sess_lines.append(f"Titles: {meta.get('session_titles')}")
+        if meta.get("session_tracking"):
+            sess_lines.append(f"Tracking: {meta.get('session_tracking')}")
+        embed.add_field(name="Sessions", value="\n".join(sess_lines)[:1024], inline=False)
+
+    credits_lines = []
+    if meta.get("credited_artists"):
+        credits_lines.append(f"Artists: {meta.get('credited_artists')}")
+    if meta.get("producers"):
+        credits_lines.append(f"Producers: {meta.get('producers')}")
+    if meta.get("engineers"):
+        credits_lines.append(f"Engineers: {meta.get('engineers')}")
+    if credits_lines:
+        embed.add_field(name="Credits", value="\n".join(credits_lines)[:1024], inline=False)
+
+    rec_lines = []
+    if meta.get("recording_locations"):
+        rec_lines.append(f"Locations: {meta.get('recording_locations')}")
+    if meta.get("record_dates"):
+        rec_lines.append(f"Record dates: {meta.get('record_dates')}")
+    if meta.get("dates"):
+        rec_lines.append(f"Additional dates: {meta.get('dates')}")
+    if rec_lines:
+        embed.add_field(name="Recording", value="\n".join(rec_lines)[:1024], inline=False)
+
+    audio_lines = []
+    if meta.get("length"):
+        audio_lines.append(f"Length: {meta.get('length')}")
+    if meta.get("bitrate"):
+        audio_lines.append(f"Bitrate: {meta.get('bitrate')}")
+    if meta.get("instrumentals"):
+        audio_lines.append(f"Instrumentals: {meta.get('instrumentals')}")
+    if meta.get("instrumental_names"):
+        audio_lines.append(f"Instrumental names: {meta.get('instrumental_names')}")
+    if audio_lines:
+        embed.add_field(name="Audio", value="\n".join(audio_lines)[:1024], inline=False)
+
+    if meta.get("file_names"):
+        embed.add_field(name="File names", value=str(meta.get("file_names"))[:1024], inline=False)
+
+    release_lines = []
+    if meta.get("preview_date"):
+        release_lines.append(f"Preview date: {meta.get('preview_date')}")
+    if meta.get("release_date"):
+        release_lines.append(f"Release date: {meta.get('release_date')}")
+    if meta.get("date_leaked"):
+        release_lines.append(f"Leak date: {meta.get('date_leaked')}")
+    if meta.get("leak_type"):
+        release_lines.append(f"Leak type: {meta.get('leak_type')}")
+    if release_lines:
+        embed.add_field(name="Release / Leak", value="\n".join(release_lines)[:1024], inline=False)
+
+    if meta.get("additional_information"):
+        embed.add_field(name="Additional information", value=str(meta.get("additional_information"))[:1024], inline=False)
+
+    if meta.get("notes"):
+        embed.add_field(name="Notes", value=str(meta.get("notes"))[:1024], inline=False)
+
+    embed.set_footer(text="Press Back to return.")
+    return embed
+
+
 def build_player_embed(
     guild_id: int,
     *,

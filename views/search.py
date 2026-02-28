@@ -9,7 +9,7 @@ from discord.ext import commands
 
 import helpers
 import state
-from views.player import NowPlayingInfoView
+from views.player import NowPlayingInfoView, build_song_info_embed
 
 class SingleSongResultView(discord.ui.View):
     """Interactive view for a single song search result.
@@ -70,57 +70,8 @@ class SingleSongResultView(discord.ui.View):
         return embed
 
     def _build_info_embed(self) -> discord.Embed:
-        """Build embed for detailed song info mode."""
-        sid = getattr(self.song, "id", "?")
-        name = getattr(self.song, "name", getattr(self.song, "title", "Unknown"))
-        category = getattr(self.song, "category", "?")
-        length = getattr(self.song, "length", "?")
-        era_name = getattr(getattr(self.song, "era", None), "name", "?")
-        
-        # Build detailed description
-        lines = [
-            f"**{name}**",
-            f"ID: `{sid}`",
-            f"Category: `{category}`",
-            f"Length: `{length}`",
-            f"Era: `{era_name}`",
-        ]
-        
-        # Add additional details if available
-        producers = getattr(self.song, "producers", None)
-        if producers:
-            lines.append(f"Producers: {producers}")
-        
-        credited_artists = getattr(self.song, "credited_artists", None)
-        if credited_artists:
-            lines.append(f"Credited Artists: {credited_artists}")
-        
-        engineers = getattr(self.song, "engineers", None)
-        if engineers:
-            lines.append(f"Engineers: {engineers}")
-        
-        recording_locations = getattr(self.song, "recording_locations", None)
-        if recording_locations:
-            lines.append(f"Recording Locations: {recording_locations}")
-        
-        record_dates = getattr(self.song, "record_dates", None)
-        if record_dates:
-            lines.append(f"Record Dates: {record_dates}")
-        
-        track_titles = getattr(self.song, "track_titles", None)
-        if track_titles:
-            lines.append(f"Track Titles: {track_titles}")
-        
-        session_titles = getattr(self.song, "session_titles", None)
-        if session_titles:
-            lines.append(f"Session Titles: {session_titles}")
-        
-        embed = discord.Embed(
-            title="Song Info",
-            description="\n".join(lines),
-        )
-        embed.set_footer(text="Press Back to return.")
-        return embed
+        """Build rich song info embed matching the player ℹ button layout."""
+        return build_song_info_embed(self.song)
 
     def _build_playlist_select_embed(self) -> discord.Embed:
         """Build embed for playlist selection mode."""
@@ -336,17 +287,17 @@ class SingleSongResultView(discord.ui.View):
         song_title = getattr(self.song, "name", getattr(self.song, "title", "Unknown"))
         song_meta = helpers.build_song_metadata_from_song(self.song)
 
-        # Switch to info mode for the song detail embed.
+        # Build rich info embed matching the player layout, with Lyrics/Snippets buttons.
+        embed = build_song_info_embed(self.song)
+        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta, ctx=self.ctx, queue_fn=self._queue_fn)
+
+        # Switch the search message to info mode (Back button only).
         self.mode = "info"
         self._rebuild_buttons()
-        embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-        # Send a separate ephemeral message with the Lyrics/Snippets buttons.
-        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta, ctx=self.ctx, queue_fn=self._queue_fn)
-        await interaction.followup.send(
-            "🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True
-        )
+        # Send the Lyrics/Snippets buttons as a second ephemeral message.
+        await interaction.followup.send(view=info_view, ephemeral=True)
 
     async def _on_back(self, interaction: discord.Interaction) -> None:
         """Handle Back button press."""
@@ -629,61 +580,10 @@ class SearchPaginationView(discord.ui.View):
         return embed
 
     def _build_info_embed(self) -> discord.Embed:
-        """Build embed for detailed song info mode."""
+        """Build rich song info embed matching the player ℹ button layout."""
         if not self.selected_song:
             return discord.Embed(title="Error", description="No song selected.")
-        
-        song = self.selected_song
-        sid = getattr(song, "id", "?")
-        name = getattr(song, "name", getattr(song, "title", "Unknown"))
-        category = getattr(song, "category", "?")
-        length = getattr(song, "length", "?")
-        era_name = getattr(getattr(song, "era", None), "name", "?")
-        
-        # Build detailed description
-        lines = [
-            f"**{name}**",
-            f"ID: `{sid}`",
-            f"Category: `{category}`",
-            f"Length: `{length}`",
-            f"Era: `{era_name}`",
-        ]
-        
-        # Add additional details if available
-        producers = getattr(song, "producers", None)
-        if producers:
-            lines.append(f"Producers: {producers}")
-        
-        credited_artists = getattr(song, "credited_artists", None)
-        if credited_artists:
-            lines.append(f"Credited Artists: {credited_artists}")
-        
-        engineers = getattr(song, "engineers", None)
-        if engineers:
-            lines.append(f"Engineers: {engineers}")
-        
-        recording_locations = getattr(song, "recording_locations", None)
-        if recording_locations:
-            lines.append(f"Recording Locations: {recording_locations}")
-        
-        record_dates = getattr(song, "record_dates", None)
-        if record_dates:
-            lines.append(f"Record Dates: {record_dates}")
-        
-        track_titles = getattr(song, "track_titles", None)
-        if track_titles:
-            lines.append(f"Track Titles: {track_titles}")
-        
-        session_titles = getattr(song, "session_titles", None)
-        if session_titles:
-            lines.append(f"Session Titles: {session_titles}")
-        
-        embed = discord.Embed(
-            title="Song Info",
-            description="\n".join(lines),
-        )
-        embed.set_footer(text="Press Back to return.")
-        return embed
+        return build_song_info_embed(self.selected_song)
 
     def _build_playlist_select_embed(self) -> discord.Embed:
         """Build embed for playlist selection mode."""
@@ -925,16 +825,17 @@ class SearchPaginationView(discord.ui.View):
         song_title = getattr(song, "name", getattr(song, "title", "Unknown")) if song else "Unknown"
         song_meta = helpers.build_song_metadata_from_song(song) if song else {}
 
+        # Build rich info embed matching the player layout.
+        embed = build_song_info_embed(song) if song else discord.Embed(title="Error", description="No song selected.")
+        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta, ctx=self.ctx, queue_fn=self._queue_fn)
+
+        # Switch the search message to info mode (Back button only).
         self.mode = "info"
         self._rebuild_buttons()
-        embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-        # Send Lyrics/Snippets buttons as a separate ephemeral message.
-        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta, ctx=self.ctx, queue_fn=self._queue_fn)
-        await interaction.followup.send(
-            "🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True
-        )
+        # Send the Lyrics/Snippets buttons as a second ephemeral message.
+        await interaction.followup.send(view=info_view, ephemeral=True)
 
     async def _handle_playlist_select(self, interaction: discord.Interaction, slot_index: int) -> None:
         """Handle selecting a playlist to add the song to."""
