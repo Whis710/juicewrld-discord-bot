@@ -297,7 +297,7 @@ class SingleSongResultView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
         # Send the Lyrics/Snippets buttons as a second ephemeral message.
-        await interaction.followup.send(view=info_view, ephemeral=True)
+        await interaction.followup.send(content="🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True)
 
     async def _on_back(self, interaction: discord.Interaction) -> None:
         """Handle Back button press."""
@@ -835,7 +835,7 @@ class SearchPaginationView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
         # Send the Lyrics/Snippets buttons as a second ephemeral message.
-        await interaction.followup.send(view=info_view, ephemeral=True)
+        await interaction.followup.send(content="🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True)
 
     async def _handle_playlist_select(self, interaction: discord.Interaction, slot_index: int) -> None:
         """Handle selecting a playlist to add the song to."""
