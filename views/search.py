@@ -9,6 +9,7 @@ from discord.ext import commands
 
 import helpers
 import state
+from views.player import NowPlayingInfoView
 
 class SingleSongResultView(discord.ui.View):
     """Interactive view for a single song search result.
@@ -324,18 +325,28 @@ class SingleSongResultView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def _on_info(self, interaction: discord.Interaction) -> None:
-        """Handle Info button press."""
+        """Handle Info button press — shows song detail embed plus Lyrics/Snippets buttons."""
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message(
                 "Only the user who ran this search can use these buttons.",
                 ephemeral=True,
             )
             return
-        
+
+        song_title = getattr(self.song, "name", getattr(self.song, "title", "Unknown"))
+        song_meta = helpers.build_song_metadata_from_song(self.song)
+
+        # Switch to info mode for the song detail embed.
         self.mode = "info"
         self._rebuild_buttons()
         embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
+
+        # Send a separate ephemeral message with the Lyrics/Snippets buttons.
+        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta)
+        await interaction.followup.send(
+            "🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True
+        )
 
     async def _on_back(self, interaction: discord.Interaction) -> None:
         """Handle Back button press."""
@@ -902,7 +913,7 @@ class SearchPaginationView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def _on_info_selected(self, interaction: discord.Interaction) -> None:
-        """Handle Info button for selected song."""
+        """Handle Info button for selected song — shows detail embed plus Lyrics/Snippets."""
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message(
                 "Only the user who ran this search can use these buttons.",
@@ -910,10 +921,20 @@ class SearchPaginationView(discord.ui.View):
             )
             return
 
+        song = self.selected_song
+        song_title = getattr(song, "name", getattr(song, "title", "Unknown")) if song else "Unknown"
+        song_meta = helpers.build_song_metadata_from_song(song) if song else {}
+
         self.mode = "info"
         self._rebuild_buttons()
         embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
+
+        # Send Lyrics/Snippets buttons as a separate ephemeral message.
+        info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta)
+        await interaction.followup.send(
+            "🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True
+        )
 
     async def _handle_playlist_select(self, interaction: discord.Interaction, slot_index: int) -> None:
         """Handle selecting a playlist to add the song to."""

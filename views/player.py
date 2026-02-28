@@ -150,10 +150,24 @@ class LyricsSongSelectView(discord.ui.View):
 
 
 class NowPlayingInfoView(discord.ui.View):
-    """Ephemeral view for extra track info (lyrics/snippets) shown from ℹ button."""
+    """Ephemeral view for extra track info (lyrics/snippets) shown from ℹ button.
 
-    def __init__(self) -> None:
+    When constructed from the player, song_title and song_metadata are read from
+    guild_now_playing at button-press time.  When constructed from a search result,
+    pass song_title (and optionally song_metadata) directly so Genius can be
+    searched for a song that isn't currently playing.
+    """
+
+    def __init__(
+        self,
+        *,
+        song_title: Optional[str] = None,
+        song_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         super().__init__(timeout=60)
+        # If set, these override the guild_now_playing lookup in button callbacks.
+        self._song_title = song_title
+        self._song_metadata = song_metadata or {}
 
     @discord.ui.button(label="Lyrics", style=discord.ButtonStyle.secondary)
     async def lyrics_button(
@@ -163,23 +177,30 @@ class NowPlayingInfoView(discord.ui.View):
     ) -> None:  # pragma: no cover - UI callback
         """Show lyrics for the currently playing track in a separate embed."""
 
-        guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message(
-                "Guild context unavailable.", ephemeral=True
-            )
-            return
+        # If a song was passed in directly (e.g. from search), use it.
+        # Otherwise read from the guild's now-playing state.
+        if self._song_title:
+            title = self._song_title
+            meta = self._song_metadata
+            lyrics = meta.get("lyrics")
+        else:
+            guild = interaction.guild
+            if not guild:
+                await interaction.response.send_message(
+                    "Guild context unavailable.", ephemeral=True
+                )
+                return
 
-        info = state.guild_now_playing.get(guild.id)
-        if not info:
-            await interaction.response.send_message(
-                "Nothing is currently tracked as playing.", ephemeral=True
-            )
-            return
+            info = state.guild_now_playing.get(guild.id)
+            if not info:
+                await interaction.response.send_message(
+                    "Nothing is currently tracked as playing.", ephemeral=True
+                )
+                return
 
-        title = str(info.get("title", "Unknown"))
-        meta = info.get("metadata") or {}
-        lyrics = meta.get("lyrics")
+            title = str(info.get("title", "Unknown"))
+            meta = info.get("metadata") or {}
+            lyrics = meta.get("lyrics")
 
         # Defer early — Genius lookup can take a moment.
         await interaction.response.defer(ephemeral=True)
@@ -241,23 +262,30 @@ class NowPlayingInfoView(discord.ui.View):
     ) -> None:  # pragma: no cover - UI callback
         """Show snippets for the currently playing track in a separate embed."""
 
-        guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message(
-                "Guild context unavailable.", ephemeral=True
-            )
-            return
+        # If a song was passed in directly (e.g. from search), use it.
+        # Otherwise read from the guild's now-playing state.
+        if self._song_title:
+            title = self._song_title
+            meta = self._song_metadata
+            snippets = meta.get("snippets") or []
+        else:
+            guild = interaction.guild
+            if not guild:
+                await interaction.response.send_message(
+                    "Guild context unavailable.", ephemeral=True
+                )
+                return
 
-        info = state.guild_now_playing.get(guild.id)
-        if not info:
-            await interaction.response.send_message(
-                "Nothing is currently tracked as playing.", ephemeral=True
-            )
-            return
+            info = state.guild_now_playing.get(guild.id)
+            if not info:
+                await interaction.response.send_message(
+                    "Nothing is currently tracked as playing.", ephemeral=True
+                )
+                return
 
-        title = str(info.get("title", "Unknown"))
-        meta = info.get("metadata") or {}
-        snippets = meta.get("snippets") or []
+            title = str(info.get("title", "Unknown"))
+            meta = info.get("metadata") or {}
+            snippets = meta.get("snippets") or []
 
         if not snippets:
             await interaction.response.send_message(
