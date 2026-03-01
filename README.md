@@ -69,8 +69,12 @@ Then deploy using your docker-compose configuration or Portainer.
 
 ## Version
 
-Current version: **3.5.1**
-Build date: 2026-02-26
+Current version: **3.5.3**
+Build date: 2026-03-01
+
+### Changelog (v3.5.3)
+- **Genius Lyrics Search** — Improved matching by including artist name in search queries (e.g. "fresh air" now correctly finds "Fresh Air (Bel-Air)")
+- **Info Button Fix** — Fixed the ℹ️ Info button in `/jw search` silently failing on ephemeral messages
 
 ## Commands
 

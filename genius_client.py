@@ -46,7 +46,11 @@ class GeniusClient:
             return []
 
         try:
-            hits = genius.search_songs(song_title)
+            # Prepend artist name so Genius ranks the Juice WRLD version
+            # higher — e.g. "fresh air" → "Juice WRLD fresh air" which
+            # matches "Fresh Air (Bel-Air)" instead of unrelated songs.
+            query = f"Juice WRLD {song_title}"
+            hits = genius.search_songs(query)
             results = hits.get("hits", []) if isinstance(hits, dict) else []
 
             candidates = []

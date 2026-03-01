@@ -287,17 +287,11 @@ class SingleSongResultView(discord.ui.View):
         song_title = getattr(self.song, "name", getattr(self.song, "title", "Unknown"))
         song_meta = helpers.build_song_metadata_from_song(self.song)
 
-        # Build rich info embed matching the player layout, with Lyrics/Snippets buttons.
+        # Build rich info embed with Lyrics/Snippets buttons in a single
+        # ephemeral message (avoids the broken edit_message + followup pattern).
         embed = build_song_info_embed(self.song)
         info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta, ctx=self.ctx, queue_fn=self._queue_fn)
-
-        # Switch the search message to info mode (Back button only).
-        self.mode = "info"
-        self._rebuild_buttons()
-        await interaction.response.edit_message(embed=embed, view=self)
-
-        # Send the Lyrics/Snippets buttons as a second ephemeral message.
-        await interaction.followup.send(content="🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=info_view, ephemeral=True)
 
     async def _on_back(self, interaction: discord.Interaction) -> None:
         """Handle Back button press."""
@@ -822,20 +816,18 @@ class SearchPaginationView(discord.ui.View):
             return
 
         song = self.selected_song
-        song_title = getattr(song, "name", getattr(song, "title", "Unknown")) if song else "Unknown"
-        song_meta = helpers.build_song_metadata_from_song(song) if song else {}
+        if not song:
+            await interaction.response.send_message("No song selected.", ephemeral=True)
+            return
 
-        # Build rich info embed matching the player layout.
-        embed = build_song_info_embed(song) if song else discord.Embed(title="Error", description="No song selected.")
+        song_title = getattr(song, "name", getattr(song, "title", "Unknown"))
+        song_meta = helpers.build_song_metadata_from_song(song)
+
+        # Build rich info embed with Lyrics/Snippets buttons in a single
+        # ephemeral message (avoids the broken edit_message + followup pattern).
+        embed = build_song_info_embed(song)
         info_view = NowPlayingInfoView(song_title=song_title, song_metadata=song_meta, ctx=self.ctx, queue_fn=self._queue_fn)
-
-        # Switch the search message to info mode (Back button only).
-        self.mode = "info"
-        self._rebuild_buttons()
-        await interaction.response.edit_message(embed=embed, view=self)
-
-        # Send the Lyrics/Snippets buttons as a second ephemeral message.
-        await interaction.followup.send(content="🎵 **Lyrics & Snippets**", view=info_view, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=info_view, ephemeral=True)
 
     async def _handle_playlist_select(self, interaction: discord.Interaction, slot_index: int) -> None:
         """Handle selecting a playlist to add the song to."""
