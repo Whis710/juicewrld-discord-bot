@@ -507,6 +507,105 @@ class NowPlayingInfoView(discord.ui.View):
             )
 
 
+class RadioQueueConfirmView(discord.ui.View):
+    """Ephemeral confirmation shown when starting radio with a non-empty queue."""
+
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        radio_fn: Callable,
+        prefetch_fn: Callable,
+        send_controls_fn: Callable,
+        requester_id: int,
+    ) -> None:
+        super().__init__(timeout=30)
+        self.ctx = ctx
+        self._radio_fn = radio_fn
+        self._prefetch_fn = prefetch_fn
+        self._send_controls_fn = send_controls_fn
+        self.requester_id = requester_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "Only the user who clicked Radio can choose this.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="🗑️ Clear Queue & Start Radio", style=discord.ButtonStyle.danger)
+    async def clear_and_start(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Clear the queue and start radio immediately."""
+        guild = self.ctx.guild
+        if not guild:
+            await interaction.response.send_message("Guild context unavailable.", ephemeral=True)
+            return
+
+        # Clear queue then enable radio.
+        state.guild_queue[guild.id] = []
+        state.guild_radio_enabled[guild.id] = True
+
+        voice: Optional[discord.VoiceClient] = self.ctx.voice_client
+        if voice and (voice.is_playing() or voice.is_paused()):
+            await self._prefetch_fn(guild.id)
+            info = state.guild_now_playing.get(guild.id, {})
+            await self._send_controls_fn(
+                self.ctx,
+                title=info.get("title", "Unknown"),
+                path=info.get("path"),
+                is_radio=True,
+                metadata=info.get("metadata", {}),
+                duration_seconds=info.get("duration_seconds"),
+            )
+            await interaction.response.edit_message(
+                content="🗑️ Queue cleared. Radio will start after the current song.",
+                view=None,
+            )
+        else:
+            await interaction.response.edit_message(
+                content="📻 Starting radio...", view=None
+            )
+            await self._radio_fn(self.ctx)
+
+        self.stop()
+
+    @discord.ui.button(label="⏭️ Let Queue Finish", style=discord.ButtonStyle.secondary)
+    async def let_queue_finish(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Enable radio but let the existing queue play out first."""
+        guild = self.ctx.guild
+        if not guild:
+            await interaction.response.send_message("Guild context unavailable.", ephemeral=True)
+            return
+
+        state.guild_radio_enabled[guild.id] = True
+
+        await self._prefetch_fn(guild.id)
+        info = state.guild_now_playing.get(guild.id, {})
+        await self._send_controls_fn(
+            self.ctx,
+            title=info.get("title", "Unknown"),
+            path=info.get("path"),
+            is_radio=True,
+            metadata=info.get("metadata", {}),
+            duration_seconds=info.get("duration_seconds"),
+        )
+        queue = state.guild_queue.get(guild.id, [])
+        await interaction.response.edit_message(
+            content=f"⏭️ Radio will start after the queue finishes ({len(queue)} track(s) remaining).",
+            view=None,
+        )
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        """Clean up if user doesn't respond."""
+        pass
+
+
 class PlayerView(discord.ui.View):
     """Discord UI controls for playback (pause/resume, stop, skip, now playing)."""
 
@@ -1043,11 +1142,26 @@ class PlayerView(discord.ui.View):
             await helpers.send_ephemeral_temporary(interaction, "You need to be in a voice channel to use radio.")
             return
 
+        # If there's a queue, ask the user what to do first.
+        queue = state.guild_queue.get(guild.id, [])
+        if queue:
+            confirm_view = RadioQueueConfirmView(
+                ctx=self.ctx,
+                radio_fn=self._radio_fn,
+                prefetch_fn=self._prefetch_fn,
+                send_controls_fn=self._send_controls_fn,
+                requester_id=interaction.user.id,
+            )
+            await interaction.followup.send(
+                f"📻 There are **{len(queue)}** track(s) in the queue. What would you like to do?",
+                view=confirm_view,
+                ephemeral=True,
+            )
+            return
+
+        # No queue — enable radio normally.
         state.guild_radio_enabled[guild.id] = True
 
-        # If something is already playing, let it finish naturally.
-        # The after-callback will detect radio is enabled and start playing
-        # random songs once the current track ends.
         voice: Optional[discord.VoiceClient] = self.ctx.voice_client
         if voice and (voice.is_playing() or voice.is_paused()):
             # Pre-fetch so "Up Next" is ready when the current song ends
