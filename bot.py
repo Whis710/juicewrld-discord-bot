@@ -149,7 +149,7 @@ def main() -> None:
             try:
                 await bot.start(DISCORD_TOKEN)
             finally:
-                await helpers.close_all()
+                await helpers.close_api()
 
     asyncio.run(_runner())
 
