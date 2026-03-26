@@ -25,7 +25,7 @@ from views.sotd import SongOfTheDayView
 log = logging.getLogger("juicewrld-bot")
 
 
-class AdminCog
+class AdminCog(commands.Cog):
     """Admin, utility, and SOTD commands."""
 
     def __init__(self, bot: commands.Bot) -> None:
