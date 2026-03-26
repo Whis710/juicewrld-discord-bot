@@ -351,14 +351,16 @@ class SlashCog(commands.GroupCog, group_name="jw"):
             )
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         voice = await helpers.ensure_voice_connected(guild, user)
         if not voice:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You need to be in a voice channel first.", ephemeral=True
             )
             return
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Joined voice channel: {voice.channel.name}", ephemeral=True
         )
 

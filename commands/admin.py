@@ -4,6 +4,7 @@ import asyncio
 import base64
 import datetime
 import io
+import logging
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -21,8 +22,10 @@ import helpers
 import state
 from views.sotd import SongOfTheDayView
 
+log = logging.getLogger("juicewrld-bot")
 
-class AdminCog(commands.Cog):
+
+class AdminCog
     """Admin, utility, and SOTD commands."""
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -67,24 +70,24 @@ class AdminCog(commands.Cog):
             return
 
         if not state.sotd_config:
-            print("[sotd] No channels configured — skipping.")
+            log.info("[sotd] No channels configured — skipping.")
             return
 
         playback = self._playback
         if not playback:
-            print("[sotd] PlaybackCog not loaded — skipping.", file=sys.stderr)
+            log.warning("[sotd] PlaybackCog not loaded — skipping.")
             return
 
         song_data = await playback._fetch_random_radio_song(include_stream_url=False)
         if not song_data:
-            print("[sotd] Failed to fetch a random song.", file=sys.stderr)
+            log.error("[sotd] Failed to fetch a random song.")
             return
 
         # Store current SOTD for later retrieval
         state.current_sotd = song_data
         state.save_sotd_config()
         
-        print(f"[sotd] Posting Song of the Day: {song_data.get('title', '?')}")
+        log.info("[sotd] Posting Song of the Day: %s", song_data.get('title', '?'))
 
         title = song_data.get("title", "Unknown")
         metadata = song_data.get("metadata", {})
@@ -132,18 +135,18 @@ class AdminCog(commands.Cog):
                         username="Juice WRLD Radio",
                         avatar_url=image_url if image_url else None,
                     )
-                    print(f"[sotd] Posted via webhook to #{chan.name} in {guild_obj.name}")
+                    log.info("[sotd] Posted via webhook to #%s in %s", chan.name, guild_obj.name)
                 else:
                     await chan.send(embed=embed, view=view)
-                    print(f"[sotd] Posted to #{chan.name} in {guild_obj.name}")
+                    log.info("[sotd] Posted to #%s in %s", chan.name, guild_obj.name)
             except Exception as exc:
                 # Fall back to normal bot message on any failure.
-                print(f"[sotd] Webhook failed for #{chan.name}: {exc}", file=sys.stderr)
+                log.warning("[sotd] Webhook failed for #%s: %s", chan.name, exc)
                 try:
                     await chan.send(embed=embed, view=view)
-                    print(f"[sotd] Fallback post to #{chan.name} in {guild_obj.name}")
+                    log.info("[sotd] Fallback post to #%s in %s", chan.name, guild_obj.name)
                 except Exception as exc2:
-                    print(f"[sotd] Failed to post to #{chan.name}: {exc2}", file=sys.stderr)
+                    log.error("[sotd] Failed to post to #%s: %s", chan.name, exc2)
                     continue
 
 
@@ -314,7 +317,7 @@ class AdminCog(commands.Cog):
 
         except Exception as e:
             await msg.edit(content=f"❌ Error syncing commands: {e}")
-            print(f"Sync error: {e}", file=sys.stderr)
+            log.error("Sync error: %s", e)
 
 
     @commands.command(name="ver", aliases=["version"])

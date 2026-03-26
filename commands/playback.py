@@ -1,6 +1,7 @@
 """Playback command Cog for the Juice WRLD Discord bot."""
 
 import asyncio
+import logging
 import os
 import sys
 import time
@@ -14,6 +15,8 @@ from exceptions import JuiceWRLDAPIError, NotFoundError
 import helpers
 import state
 from views.player import PlayerView, build_player_embed
+
+log = logging.getLogger("juicewrld-bot")
 
 # FFmpeg options shared by all playback paths.
 _FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
@@ -144,14 +147,14 @@ class PlaybackCog(commands.Cog):
                 options=_FFMPEG_OPTIONS,
             )
         except Exception as e:  # pragma: no cover
-            print(f"Queue playback error creating source: {e}", file=sys.stderr)
+            log.error("Queue playback error creating source: %s", e)
             # Try the next track in the queue, if any.
             await self._play_next_from_queue(ctx)
             return
 
         def _after_playback(error: Optional[Exception]) -> None:
             if error:
-                print(f"Queue playback error: {error}", file=sys.stderr)
+                log.error("Queue playback error: %s", error)
             fut = self._play_next_from_queue(ctx)
             asyncio.run_coroutine_threadsafe(fut, self.bot.loop)
 
@@ -256,7 +259,7 @@ class PlaybackCog(commands.Cog):
 
         def _after_playback(error: Optional[Exception]) -> None:
             if error:
-                print(f"Playback error: {error}", file=sys.stderr)
+                log.error("Playback error: %s", error)
             fut = self._play_next_from_queue(ctx)
             asyncio.run_coroutine_threadsafe(fut, self.bot.loop)
 
@@ -1293,7 +1296,7 @@ class PlaybackCog(commands.Cog):
                 "path": file_path,
             }
         except Exception as e:
-            print(f"Radio: failed to fetch random song: {e}", file=sys.stderr)
+            log.error("Radio: failed to fetch random song: %s", e)
             return None
 
 
@@ -1305,7 +1308,7 @@ class PlaybackCog(commands.Cog):
                 return stream_result.get("stream_url")
             return None
         except Exception as e:
-            print(f"Radio: failed to get stream URL for {file_path}: {e}", file=sys.stderr)
+            log.error("Radio: failed to get stream URL for %s: %s", file_path, e)
             return None
 
 
@@ -1419,7 +1422,7 @@ class PlaybackCog(commands.Cog):
         def _after_playback(error: Optional[Exception]) -> None:
             if error:
                 # Log error to stderr; Discord callbacks can't await
-                print(f"Radio playback error: {error}", file=sys.stderr)
+                log.error("Radio playback error: %s", error)
 
             if not ctx.guild:
                 return

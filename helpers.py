@@ -164,21 +164,44 @@ def build_song_metadata_from_song(
 async def ensure_voice_connected(
     guild: discord.Guild,
     user: discord.Member,
+    *,
+    timeout: float = 10.0,
 ) -> Optional[discord.VoiceClient]:
     """Connect or move to the user's voice channel.
 
     Returns the :class:`discord.VoiceClient` on success, or ``None`` if
-    the user is not currently in a voice channel.
+    the user is not currently in a voice channel or the connection times out.
     """
     if not user.voice or not user.voice.channel:
         return None
     channel = user.voice.channel
     voice: Optional[discord.VoiceClient] = guild.voice_client  # type: ignore[assignment]
+
+    # If there's an existing voice client that is NOT connected, clean it up
+    # so we don't get stuck retrying a stale session.
+    if voice and not voice.is_connected():
+        try:
+            await voice.disconnect(force=True)
+        except Exception:
+            pass
+        voice = None
+
     if voice and voice.is_connected():
         if voice.channel != channel:
             await voice.move_to(channel)
         return voice
-    return await channel.connect()
+
+    try:
+        return await asyncio.wait_for(channel.connect(), timeout=timeout)
+    except asyncio.TimeoutError:
+        # Force-disconnect the half-open client so it doesn't linger.
+        new_voice: Optional[discord.VoiceClient] = guild.voice_client  # type: ignore[assignment]
+        if new_voice:
+            try:
+                await new_voice.disconnect(force=True)
+            except Exception:
+                pass
+        return None
 
 
 # ── Stream error helper ───────────────────────────────────────────────

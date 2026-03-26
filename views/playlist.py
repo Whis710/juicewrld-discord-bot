@@ -444,7 +444,7 @@ class PlaylistPaginationView(discord.ui.View):
                 )
                 queued += 1
             except Exception as e:
-                print(f"Error queueing track from playlist: {e}", file=sys.stderr)
+                logging.getLogger("juicewrld-bot").error("Error queueing track from playlist: %s", e)
                 errors += 1
                 continue
 
