@@ -7,6 +7,16 @@ All UI views live in the ``views/`` package.
 Shared state, helpers, and constants are in their respective modules.
 """
 
+
+import sys
+import subprocess
+
+# 1. FORCE THE INSTALLATION FIRST THING AT LIVE RUNTIME
+try:
+    import davey
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "discord.py[voice]>=2.7.0"])
+
 import asyncio
 import logging
 import os
@@ -23,6 +33,7 @@ from discord.ext import commands
 from constants import DISCORD_TOKEN
 import helpers
 import state
+
 
 # ── Logging ───────────────────────────────────────────────────────────
 
