@@ -12,12 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 
 COPY requirements.txt .
-# Force Portainer to bypass the cache
-RUN echo "Force Cache Bust 2026-09-27"
-RUN pip install --no-cache-dir -r requirements.txt
-
 COPY . .
 
 EXPOSE 8080
 
-CMD ["python", "bot.py"]
+ENTRYPOINT ["sh", "-c", "pip install --no-cache-dir --upgrade 'discord.py[voice]>=2.7.0' && python bot.py"]
